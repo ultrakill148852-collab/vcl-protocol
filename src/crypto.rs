@@ -1,5 +1,6 @@
-use ed25519_dalek::{SigningKey, VerifyingKey};
+use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
+use ed25519_dalek::SecretKey;
 
 pub struct KeyPair {
     pub private_key: Vec<u8>,
@@ -9,11 +10,12 @@ pub struct KeyPair {
 impl KeyPair {
     pub fn generate() -> Self {
         let mut csprng = OsRng;
-        let signing_key = SigningKey::generate(&mut csprng);
+        let secret_key_bytes = SecretKey::generate(&mut csprng);
+        let signing_key = SigningKey::from(&secret_key_bytes);
         let verifying_key = signing_key.verifying_key();
         
         KeyPair {
-            private_key: signing_key.to_bytes().to_vec(),
+            private_key: secret_key_bytes.to_bytes().to_vec(),
             public_key: verifying_key.to_bytes().to_vec(),
         }
     }
