@@ -24,7 +24,7 @@ impl VCLConnection {
     }
 
     pub async fn connect(&mut self, addr: &str) -> Result<(), String> {
-        self.peer_addr = Some(addr.parse().map_err(|e| e.to_string())?);
+       self.peer_addr = Some(addr.parse().map_err(|e: std::net::AddrParseError| e.to_string())?);
         Ok(())
     }
 
