@@ -1,0 +1,38 @@
+mod packet;
+mod crypto;
+mod connection;
+
+use connection::VCLConnection;
+use tokio::time::{sleep, Duration};
+
+#[tokio::main]
+async fn main() {
+    println!("=== VCL Protocol Demo ===\n");
+
+    let mut server = VCLConnection::bind("127.0.0.1:8080").await.unwrap();
+    println!("Server started on 127.0.0.1:8080");
+
+    let mut client = VCLConnection::bind("127.0.0.1:0").await.unwrap();
+    client.connect("127.0.0.1:8080").await.unwrap();
+
+    let server_handle = tokio::spawn(async move {
+        for i in 1..=5 {
+            match server.recv().await {
+                Ok(packet) => {
+                    println!("Server received packet {}: {}", i, String::from_utf8_lossy(&packet.payload));
+                }
+                Err(e) => println!("Server error: {}", e),
+            }
+        }
+    });
+
+    for i in 1..=5 {
+        let msg = format!("Message {}", i);
+        client.send(msg.as_bytes()).await.unwrap();
+        println!("Client sent: {}", msg);
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    server_handle.await.unwrap();
+    println!("\n=== Demo Complete ===");
+}
