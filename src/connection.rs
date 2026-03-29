@@ -45,8 +45,7 @@ impl VCLConnection {
         self.peer_addr = Some(parsed);
         
         // HANDSHAKE: Client
-        let mut handshake = HandshakeState::new(true);
-        let (hello_msg, _ephemeral) = HandshakeState::create_client_hello();
+        let (hello_msg, ephemeral) = HandshakeState::create_client_hello();
         
         // Отправляем ClientHello
         let hello_bytes = bincode::serialize(&hello_msg).map_err(|e| e.to_string())?;
@@ -58,22 +57,22 @@ impl VCLConnection {
         let server_hello: HandshakeMessage = bincode::deserialize(&buf[..len]).map_err(|e| e.to_string())?;
         
         if let HandshakeMessage::ServerHello { public_key } = server_hello {
-            if !handshake.process_server_hello(&public_key) {
+            let shared = HandshakeState::process_server_hello(ephemeral, public_key);
+            if let Some(secret) = shared {
+                self.shared_secret = Some(secret);
+            } else {
                 return Err("Handshake failed".to_string());
             }
         } else {
             return Err("Expected ServerHello".to_string());
         }
         
-        // Сохраняем shared_secret
-        self.shared_secret = handshake.get_shared_secret();
-        
         Ok(())
     }
 
     pub async fn accept_handshake(&mut self) -> Result<(), String> {
         // HANDSHAKE: Server
-        let mut handshake = HandshakeState::new(false);
+        let ephemeral = EphemeralSecret::random_from_rng(OsRng);
         
         // Ждём ClientHello
         let mut buf = vec![0u8; 65535];
@@ -83,15 +82,19 @@ impl VCLConnection {
         let client_hello: HandshakeMessage = bincode::deserialize(&buf[..len]).map_err(|e| e.to_string())?;
         
         if let HandshakeMessage::ClientHello { public_key } = client_hello {
-            let server_hello = handshake.process_client_hello(&public_key);
+            let (server_hello, shared) = HandshakeState::process_client_hello(ephemeral, public_key);
             
             // Отправляем ServerHello
             let hello_bytes = bincode::serialize(&server_hello).map_err(|e| e.to_string())?;
             self.socket.send_to(&hello_bytes, addr).await.map_err(|e| e.to_string())?;
             
             // Сохраняем shared_secret
-            self.shared_secret = handshake.get_shared_secret();
-            self.is_server = true;
+            if let Some(secret) = shared {
+                self.shared_secret = Some(secret);
+                self.is_server = true;
+            } else {
+                return Err("Handshake failed".to_string());
+            }
         } else {
             return Err("Expected ClientHello".to_string());
         }
@@ -99,7 +102,7 @@ impl VCLConnection {
         Ok(())
     }
 
-    pub async fn send(&mut self, data: &[u8]) -> Result<(), String> {
+    pub async fn send(&mut self,  &[u8]) -> Result<(), String> {
         let mut packet = VCLPacket::new(self.sequence, self.last_hash.clone(), data.to_vec());
         packet.sign(&self.keypair.private_key);
         let serialized = packet.serialize();
