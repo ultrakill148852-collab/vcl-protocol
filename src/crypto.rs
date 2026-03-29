@@ -1,7 +1,8 @@
-use ed25519_dalek::{SigningKey, VerifyingKey};
+use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
-use chacha20poly1305::{XChaCha20Poly1305, KeyInit};
-use chacha20poly1305::aead::{Aead, Nonce};
+use rand::RngCore;
+use chacha20poly1305::{XChaCha20Poly1305, KeyInit, AeadCore};
+use chacha20poly1305::aead::Aead;
 use chacha20poly1305::XNonce;
 
 #[derive(Clone, Debug)]
@@ -12,7 +13,9 @@ pub struct KeyPair {
 
 impl KeyPair {
     pub fn generate() -> Self {
-        let signing_key = SigningKey::generate(&mut OsRng);
+        let mut secret_bytes = [0u8; 32];
+        OsRng.fill_bytes(&mut secret_bytes);
+        let signing_key = SigningKey::from_bytes(&secret_bytes);
         let verifying_key = signing_key.verifying_key();
         
         KeyPair {
@@ -22,27 +25,19 @@ impl KeyPair {
     }
 }
 
-/// Encrypts payload using XChaCha20-Poly1305
-/// 
-/// Returns: (ciphertext, nonce)
 pub fn encrypt_payload(data: &[u8], key: &[u8; 32]) -> (Vec<u8>, [u8; 24]) {
     let cipher = XChaCha20Poly1305::new_from_slice(key).unwrap();
     let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
     let nonce_bytes: [u8; 24] = nonce.as_ref().try_into().unwrap();
-    
     let ciphertext = cipher.encrypt(&nonce, data).unwrap();
-    
     (ciphertext, nonce_bytes)
 }
 
-/// Decrypts payload using XChaCha20-Poly1305
 pub fn decrypt_payload(ciphertext: &[u8], key: &[u8; 32], nonce: &[u8; 24]) -> Result<Vec<u8>, String> {
     let cipher = XChaCha20Poly1305::new_from_slice(key).unwrap();
     let nonce = XNonce::from_slice(nonce);
-    
     let plaintext = cipher.decrypt(nonce, ciphertext)
         .map_err(|e| format!("Decryption failed: {}", e))?;
-    
     Ok(plaintext)
 }
 
