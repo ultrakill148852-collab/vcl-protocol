@@ -4,7 +4,6 @@
 
 [![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-Prototype-yellow.svg)]()
 
 ## About
 
@@ -22,30 +21,26 @@ VCL Protocol is a transport protocol where each packet cryptographically links t
 
 ## Architecture
 
-    Packet N          Packet N+1        Packet N+2
-    ┌─────────┐      ┌─────────┐      ┌─────────┐
-    │ hash    │─────▶│ prev    │      │ prev    │
-    │ 0x00    │      │ 0x3a    │─────▶│ 0x7f    │
-    │ sig     │      │ sig     │      │ sig     │
-    └─────────      └─────────┘      └─────────
+Packet N  ----->  Packet N+1  ----->  Packet N+2
+[hash]          [prev:hash]         [prev:hash]
+[sig]           [sig]               [sig]
+
+Chain: hash(Packet N) → stored in Packet N+1 → hash(Packet N+1) → stored in Packet N+2
 
 ## Quick Start
 
-    # Clone repository
     git clone https://github.com/ultrakill148852-collab/vcl-protocol.git
     cd vcl-protocol
-
-    # Run demo
     cargo run
 
-Expected output:
+### Expected Output
 
     === VCL Protocol Demo ===
     Server started on 127.0.0.1:8080
     Client connected
     Client sent: Message 1
     Server received packet 1: Message 1
-    ...
+    Server received packet 2: Message 2
     === Demo Complete ===
 
 ## Packet Structure
@@ -60,41 +55,26 @@ Expected output:
 
 ## Use Cases
 
-- **Financial Transactions** — Immutable audit log of all transactions
-- **Anti-Cheat Systems** — Verify integrity of game events
-- **Audit Logging** — Cryptographically proven data integrity
-- **Secure Communications** — Protected channel with authentication
+- **Financial Transactions** — Immutable audit log
+- **Anti-Cheat Systems** — Verify game event integrity
+- **Audit Logging** — Cryptographically proven integrity
+- **Secure Communications** — Authenticated channel
 
 ## Technical Details
 
-**Cryptography:**
-- Hashing: SHA-256
-- Signatures: Ed25519
-- Key Generation: CSPRNG
-
-**Transport:**
-- Protocol: UDP
-- Runtime: Tokio async
-- Max Packet Size: 65535 bytes
-
-**Serialization:**
-- Format: Bincode
-- Efficiency: Minimal overhead
+**Cryptography:** SHA-256, Ed25519, CSPRNG
+**Transport:** UDP, Tokio async, 65535 bytes max packet
+**Serialization:** Bincode
 
 ## Development
 
-    # Run tests
-    cargo test
-
-    # Format code
-    cargo fmt
-
-    # Linting
-    cargo clippy
+    cargo test      # Run tests
+    cargo fmt       # Format code  
+    cargo clippy    # Linting
 
 ## License
 
-MIT License — see LICENSE file for details
+MIT License
 
 ## Author
 
