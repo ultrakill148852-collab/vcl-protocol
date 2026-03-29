@@ -127,7 +127,7 @@ impl VCLConnection {
         
         let packet = VCLPacket::deserialize(&buf[..len])?;
         
-        if packet.sequence <= self.last_sequence {
+        if self.last_sequence > 0 && packet.sequence <= self.last_sequence {
             return Err("Replay detected: old sequence number".to_string());
         }
         
