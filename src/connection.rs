@@ -6,6 +6,7 @@ use x25519_dalek::EphemeralSecret;
 use rand::rngs::OsRng;
 use tokio::net::UdpSocket;
 use std::net::SocketAddr;
+use std::collections::HashSet;
 
 pub struct VCLConnection {
     socket: UdpSocket,
@@ -16,6 +17,8 @@ pub struct VCLConnection {
     peer_public_key: Option<Vec<u8>>,
     shared_secret: Option<[u8; 32]>,
     is_server: bool,
+    last_sequence: u64,
+    seen_nonces: HashSet<[u8; 24]>,
 }
 
 impl VCLConnection {
@@ -30,6 +33,8 @@ impl VCLConnection {
             peer_public_key: None,
             shared_secret: None,
             is_server: false,
+            last_sequence: 0,
+            seen_nonces: HashSet::new(),
         })
     }
 
@@ -122,6 +127,19 @@ impl VCLConnection {
         
         let packet = VCLPacket::deserialize(&buf[..len])?;
         
+        if packet.sequence <= self.last_sequence {
+            return Err("Replay detected: old sequence number".to_string());
+        }
+        
+        if self.seen_nonces.contains(&packet.nonce) {
+            return Err("Replay detected: duplicate nonce".to_string());
+        }
+        self.seen_nonces.insert(packet.nonce);
+        
+        if self.seen_nonces.len() > 1000 {
+            self.seen_nonces.clear();
+        }
+        
         if !packet.validate_chain(&self.last_hash) {
             return Err("Chain validation failed".to_string());
         }
@@ -132,6 +150,7 @@ impl VCLConnection {
         }
         
         self.last_hash = packet.compute_hash();
+        self.last_sequence = packet.sequence;
         
         let key = self.shared_secret.ok_or("No shared secret")?;
         let decrypted = decrypt_payload(&packet.payload, &key, &packet.nonce)?;
