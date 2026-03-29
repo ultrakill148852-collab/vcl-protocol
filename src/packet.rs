@@ -32,7 +32,8 @@ impl VCLPacket {
 
     pub fn sign(&mut self, private_key: &[u8]) {
         use ed25519_dalek::{Signer, SigningKey};
-        let signing_key = SigningKey::from_bytes(private_key.try_into().unwrap());
+        let key_bytes: &[u8; 32] = private_key.try_into().unwrap();
+        let signing_key = SigningKey::from_bytes(key_bytes);
         let hash = self.compute_hash();
         self.signature = signing_key.sign(&hash).to_bytes().to_vec();
     }
