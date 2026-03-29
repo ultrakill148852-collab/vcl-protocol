@@ -21,11 +21,15 @@ VCL Protocol is a transport protocol where each packet cryptographically links t
 
 ## Architecture
 
-Packet N  ----->  Packet N+1  ----->  Packet N+2
-[hash]          [prev:hash]         [prev:hash]
-[sig]           [sig]               [sig]
+    Packet N        Packet N+1      Packet N+2
+    +--------+     +--------+     +--------+
+    | hash   |     | prev   |     | prev   |
+    | 0x00.. | --> | 0x00.. | --> | 0x3a.. |
+    | sig    |     | sig    |     | sig    |
+    +--------+     +--------+     +--------+
 
-Chain: hash(Packet N) → stored in Packet N+1 → hash(Packet N+1) → stored in Packet N+2
+    hash(Packet N) -> stored in prev_hash of Packet N+1
+    hash(Packet N+1) -> stored in prev_hash of Packet N+2
 
 ## Quick Start
 
@@ -46,11 +50,11 @@ Chain: hash(Packet N) → stored in Packet N+1 → hash(Packet N+1) → stored i
 ## Packet Structure
 
     pub struct VCLPacket {
-        pub version: u8,           // Protocol version
-        pub sequence: u64,         // Packet sequence number
-        pub prev_hash: Vec<u8>,    // SHA-256 hash of previous packet
-        pub payload: Vec<u8>,      // Data payload
-        pub signature: Vec<u8>,    // Ed25519 signature
+        pub version: u8,
+        pub sequence: u64,
+        pub prev_hash: Vec<u8>,
+        pub payload: Vec<u8>,
+        pub signature: Vec<u8>,
     }
 
 ## Use Cases
@@ -62,14 +66,14 @@ Chain: hash(Packet N) → stored in Packet N+1 → hash(Packet N+1) → stored i
 
 ## Technical Details
 
-**Cryptography:** SHA-256, Ed25519, CSPRNG
-**Transport:** UDP, Tokio async, 65535 bytes max packet
+**Cryptography:** SHA-256, Ed25519, CSPRNG  
+**Transport:** UDP, Tokio async, 65535 bytes max packet  
 **Serialization:** Bincode
 
 ## Development
 
     cargo test      # Run tests
-    cargo fmt       # Format code  
+    cargo fmt       # Format code
     cargo clippy    # Linting
 
 ## License
