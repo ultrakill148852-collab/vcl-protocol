@@ -1,5 +1,6 @@
 use crate::packet::VCLPacket;
 use crate::crypto::KeyPair;
+use ed25519_dalek::SigningKey;
 use tokio::net::UdpSocket;
 use std::net::SocketAddr;
 
@@ -9,6 +10,7 @@ pub struct VCLConnection {
     sequence: u64,
     last_hash: Vec<u8>,
     peer_addr: Option<SocketAddr>,
+    peer_public_key: Option<Vec<u8>>,
 }
 
 impl VCLConnection {
@@ -20,7 +22,17 @@ impl VCLConnection {
             sequence: 0,
             last_hash: vec![0; 32],
             peer_addr: None,
+            peer_public_key: None,
         })
+    }
+
+    pub fn set_shared_key(&mut self, private_key: &[u8]) {
+        let key_bytes: &[u8; 32] = private_key.try_into().unwrap();
+        let signing_key = SigningKey::from_bytes(key_bytes);
+        let verifying_key = signing_key.verifying_key();
+        
+        self.keypair.private_key = private_key.to_vec();
+        self.keypair.public_key = verifying_key.to_bytes().to_vec();
     }
 
     pub async fn connect(&mut self, addr: &str) -> Result<(), String> {
@@ -32,38 +44,29 @@ impl VCLConnection {
     pub async fn send(&mut self, data: &[u8]) -> Result<(), String> {
         let mut packet = VCLPacket::new(self.sequence, self.last_hash.clone(), data.to_vec());
         packet.sign(&self.keypair.private_key);
-        
         let serialized = packet.serialize();
         let addr = self.peer_addr.ok_or("No peer address")?;
-        
         self.socket.send_to(&serialized, addr).await.map_err(|e| e.to_string())?;
-        
         self.last_hash = packet.compute_hash();
         self.sequence += 1;
-        
         Ok(())
     }
 
     pub async fn recv(&mut self) -> Result<VCLPacket, String> {
         let mut buf = vec![0u8; 65535];
         let (len, addr) = self.socket.recv_from(&mut buf).await.map_err(|e| e.to_string())?;
-        
         if self.peer_addr.is_none() {
             self.peer_addr = Some(addr);
         }
-        
         let packet = VCLPacket::deserialize(&buf[..len])?;
-        
         if !packet.validate_chain(&self.last_hash) {
             return Err("Chain validation failed".to_string());
         }
-        
-        if !packet.verify(&self.keypair.public_key) {
+        let verify_key = self.peer_public_key.as_ref().unwrap_or(&self.keypair.public_key);
+        if !packet.verify(verify_key) {
             return Err("Signature validation failed".to_string());
         }
-        
         self.last_hash = packet.compute_hash();
-        
         Ok(packet)
     }
 
