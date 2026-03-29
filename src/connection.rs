@@ -1,6 +1,6 @@
 use crate::packet::VCLPacket;
 use crate::crypto::{KeyPair, encrypt_payload, decrypt_payload};
-use crate::handshake::{HandshakeMessage, HandshakeState, create_client_hello, process_client_hello, process_server_hello};
+use crate::handshake::{HandshakeMessage, create_client_hello, process_client_hello, process_server_hello};
 use ed25519_dalek::SigningKey;
 use x25519_dalek::EphemeralSecret;
 use rand::rngs::OsRng;
@@ -97,7 +97,7 @@ impl VCLConnection {
         Ok(())
     }
 
-    pub async fn send(&mut self,  &[u8]) -> Result<(), String> {
+    pub async fn send(&mut self, data: &[u8]) -> Result<(), String> {
         let key = self.shared_secret.ok_or("No shared secret")?;
         let (encrypted_payload, nonce) = encrypt_payload(data, &key);
         
