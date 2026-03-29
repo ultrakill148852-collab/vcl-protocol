@@ -2,9 +2,16 @@
 name = "vcl-protocol"
 version = "0.1.0"
 edition = "2021"
-description = "Verified Commit Link Protocol — Cryptographically chained packet transport"
+description = "Verified Commit Link Protocol"
 license = "MIT"
-repository = "https://github.com/ultrakill148852-collab/vcl-protocol"
+
+[lib]
+name = "vcl_protocol"
+path = "src/lib.rs"
+
+[[bin]]
+name = "vcl-protocol"
+path = "src/main.rs"
 
 [dependencies]
 sha2 = "0.10"
