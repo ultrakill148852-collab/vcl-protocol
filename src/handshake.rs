@@ -10,17 +10,13 @@ pub enum HandshakeMessage {
 }
 
 pub struct HandshakeState {
-    ephemeral_secret: Option<EphemeralSecret>,
     shared_secret: Option<[u8; 32]>,
-    is_initiator: bool,
 }
 
 impl HandshakeState {
-    pub fn new(initiator: bool) -> Self {
+    pub fn new() -> Self {
         HandshakeState {
-            ephemeral_secret: None,
             shared_secret: None,
-            is_initiator: initiator,
         }
     }
 
@@ -33,35 +29,32 @@ impl HandshakeState {
         (msg, ephemeral)
     }
 
-    pub fn process_client_hello(&mut self, client_public: [u8; 32]) -> HandshakeMessage {
-        let ephemeral = EphemeralSecret::random_from_rng(OsRng);
+    pub fn process_client_hello(ephemeral: EphemeralSecret, client_public: [u8; 32]) -> (HandshakeMessage, Option<[u8; 32]>) {
         let server_public = PublicKey::from(&ephemeral);
         
-        if let Ok(client_pk) = PublicKey::try_from(client_public) {
-            let shared: SharedSecret = ephemeral.diffie_hellman(&client_pk);
-            self.shared_secret = Some(shared.to_bytes());
-        }
+        let client_pk = PublicKey::from(client_public);
+        let shared: SharedSecret = ephemeral.diffie_hellman(&client_pk);
+        let shared_bytes = shared.to_bytes();
         
-        self.ephemeral_secret = Some(ephemeral);
-        
-        HandshakeMessage::ServerHello {
+        let msg = HandshakeMessage::ServerHello {
             public_key: server_public.to_bytes(),
-        }
+        };
+        
+        (msg, Some(shared_bytes))
     }
 
-    pub fn process_server_hello(&mut self, server_public: [u8; 32]) -> bool {
-        if let Some(secret) = &self.ephemeral_secret {
-            if let Ok(server_pk) = PublicKey::try_from(server_public) {
-                let shared: SharedSecret = secret.diffie_hellman(&server_pk);
-                self.shared_secret = Some(shared.to_bytes());
-                return true;
-            }
-        }
-        false
+    pub fn process_server_hello(ephemeral: EphemeralSecret, server_public: [u8; 32]) -> Option<[u8; 32]> {
+        let server_pk = PublicKey::from(server_public);
+        let shared: SharedSecret = ephemeral.diffie_hellman(&server_pk);
+        Some(shared.to_bytes())
     }
 
     pub fn get_shared_secret(&self) -> Option<[u8; 32]> {
         self.shared_secret
+    }
+
+    pub fn set_shared_secret(&mut self, secret: [u8; 32]) {
+        self.shared_secret = Some(secret);
     }
 
     pub fn is_complete(&self) -> bool {
