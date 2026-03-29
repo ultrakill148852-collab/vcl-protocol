@@ -22,7 +22,7 @@
 
 VCL Protocol is a transport protocol where each packet cryptographically links to the previous one, creating an immutable chain of data transmission. Inspired by blockchain principles, optimized for real-time networking.
 
-**Now with X25519 Handshake** — secure key exchange without pre-shared secrets!
+**Now with X25519 Handshake + XChaCha20-Poly1305 Encryption** — secure key exchange and authenticated encryption without pre-shared secrets!
 
 ---
 
@@ -33,6 +33,7 @@ VCL Protocol is a transport protocol where each packet cryptographically links t
 | 🔐 Cryptographic Chain | Each packet references hash of previous packet |
 | ✍️ Ed25519 Signatures | Fast and secure digital signatures |
 | 🔑 X25519 Handshake | Ephemeral key exchange, no pre-shared keys needed |
+| 🔒 XChaCha20-Poly1305 | Authenticated encryption for all payloads |
 | ✅ Chain Validation | Automatic integrity checking |
 | ⚡ UDP Transport | Low latency, high performance |
 | 🛡️ Tamper-Evident | Any modification is immediately detectable |
@@ -61,6 +62,11 @@ VCL Protocol is a transport protocol where each packet cryptographically links t
        |                               |
        | [Shared secret computed]      |
        | [Secure channel established]  |
+
+### Encryption Flow
+
+    Send: plaintext → encrypt(XChaCha20) → sign(Ed25519) → send
+    Recv: receive → verify(Ed25519) → decrypt(XChaCha20) → plaintext
 
 ---
 
@@ -92,6 +98,10 @@ VCL Protocol is a transport protocol where each packet cryptographically links t
     Server received packet 2: Message 2
     Client sent: Message 3
     Server received packet 3: Message 3
+    Client sent: Message 4
+    Server received packet 4: Message 4
+    Client sent: Message 5
+    Server received packet 5: Message 5
 
     === Demo Complete ===
 
@@ -103,7 +113,8 @@ VCL Protocol is a transport protocol where each packet cryptographically links t
         pub version: u8,           // Protocol version
         pub sequence: u64,         // Packet sequence number
         pub prev_hash: Vec<u8>,    // SHA-256 hash of previous packet
-        pub payload: Vec<u8>,      // Data payload
+        pub nonce: [u8; 24],       // XChaCha20 nonce for encryption
+        pub payload: Vec<u8>,      // Encrypted data payload
         pub signature: Vec<u8>,    // Ed25519 signature
     }
 
@@ -121,7 +132,7 @@ Verify integrity of game events and detect tampering in real-time.
 Cryptographically proven data integrity for compliance and debugging.
 
 ### 🔐 Secure Communications
-Authenticated channel with end-to-end verification and ephemeral key exchange.
+Authenticated and encrypted channel with end-to-end verification and ephemeral key exchange.
 
 ---
 
@@ -131,6 +142,7 @@ Authenticated channel with end-to-end verification and ephemeral key exchange.
 - **Hashing:** SHA-256
 - **Signatures:** Ed25519 (Edwards-curve Digital Signature Algorithm)
 - **Key Exchange:** X25519 (Elliptic-curve Diffie-Hellman)
+- **Encryption:** XChaCha20-Poly1305 (AEAD)
 - **Key Generation:** CSPRNG (Cryptographically Secure PRNG)
 
 ### Transport
@@ -145,8 +157,10 @@ Authenticated channel with end-to-end verification and ephemeral key exchange.
 ### Dependencies
 - `ed25519-dalek` — Ed25519 signatures
 - `x25519-dalek` — X25519 key exchange
+- `chacha20poly1305` — XChaCha20-Poly1305 AEAD encryption
 - `sha2` — SHA-256 hashing
-- `chacha20poly1305` — AEAD encryption (ready for next version)
+- `tokio` — Async runtime
+- `serde` + `bincode` — Serialization
 
 ---
 
@@ -187,6 +201,7 @@ GitHub: [@ultrakill148852-collab](https://github.com/ultrakill148852-collab)
 
 - **Ed25519** — Fast and secure cryptography
 - **X25519** — Efficient elliptic-curve key exchange
+- **XChaCha20-Poly1305** — Modern authenticated encryption
 - **Tokio** — Asynchronous runtime for Rust
 - **Rust** — The language that makes the impossible possible
 
