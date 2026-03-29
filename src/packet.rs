@@ -69,6 +69,7 @@ impl VCLPacket {
 
 #[cfg(test)]
 mod tests {
+    use crate::crypto::KeyPair;
     use super::*;
 
     fn test_keypair() -> KeyPair {
@@ -87,7 +88,6 @@ mod tests {
     fn test_compute_hash() {
         let p1 = VCLPacket::new(1, vec![0; 32], b"A".to_vec(), [0; 24]);
         let p2 = VCLPacket::new(1, vec![0; 32], b"B".to_vec(), [0; 24]);
-        
         assert_ne!(p1.compute_hash(), p2.compute_hash());
     }
 
@@ -95,7 +95,6 @@ mod tests {
     fn test_sign_verify() {
         let kp = test_keypair();
         let mut packet = VCLPacket::new(1, vec![0; 32], b"test".to_vec(), [0; 24]);
-        
         packet.sign(&kp.private_key);
         assert!(packet.verify(&kp.public_key));
     }
@@ -105,7 +104,6 @@ mod tests {
         let kp1 = test_keypair();
         let kp2 = test_keypair();
         let mut packet = VCLPacket::new(1, vec![0; 32], b"test".to_vec(), [0; 24]);
-        
         packet.sign(&kp1.private_key);
         assert!(!packet.verify(&kp2.public_key));
     }
@@ -114,7 +112,6 @@ mod tests {
     fn test_validate_chain() {
         let prev = vec![1, 2, 3];
         let packet = VCLPacket::new(1, prev.clone(), b"test".to_vec(), [0; 24]);
-        
         assert!(packet.validate_chain(&prev));
         assert!(!packet.validate_chain(&[4, 5, 6]));
     }
@@ -124,7 +121,6 @@ mod tests {
         let original = VCLPacket::new(42, vec![9; 32], b"payload".to_vec(), [7; 24]);
         let bytes = original.serialize();
         let restored = VCLPacket::deserialize(&bytes).unwrap();
-        
         assert_eq!(original.sequence, restored.sequence);
         assert_eq!(original.payload, restored.payload);
         assert_eq!(original.nonce, restored.nonce);
