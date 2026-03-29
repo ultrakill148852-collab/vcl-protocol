@@ -66,3 +66,67 @@ impl VCLPacket {
         bincode::deserialize(data).map_err(|e| e.to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_keypair() -> KeyPair {
+        KeyPair::generate()
+    }
+
+    #[test]
+    fn test_packet_new() {
+        let packet = VCLPacket::new(1, vec![0; 32], b"test".to_vec(), [0; 24]);
+        assert_eq!(packet.version, 1);
+        assert_eq!(packet.sequence, 1);
+        assert_eq!(packet.payload, b"test");
+    }
+
+    #[test]
+    fn test_compute_hash() {
+        let p1 = VCLPacket::new(1, vec![0; 32], b"A".to_vec(), [0; 24]);
+        let p2 = VCLPacket::new(1, vec![0; 32], b"B".to_vec(), [0; 24]);
+        
+        assert_ne!(p1.compute_hash(), p2.compute_hash());
+    }
+
+    #[test]
+    fn test_sign_verify() {
+        let kp = test_keypair();
+        let mut packet = VCLPacket::new(1, vec![0; 32], b"test".to_vec(), [0; 24]);
+        
+        packet.sign(&kp.private_key);
+        assert!(packet.verify(&kp.public_key));
+    }
+
+    #[test]
+    fn test_verify_wrong_key_fails() {
+        let kp1 = test_keypair();
+        let kp2 = test_keypair();
+        let mut packet = VCLPacket::new(1, vec![0; 32], b"test".to_vec(), [0; 24]);
+        
+        packet.sign(&kp1.private_key);
+        assert!(!packet.verify(&kp2.public_key));
+    }
+
+    #[test]
+    fn test_validate_chain() {
+        let prev = vec![1, 2, 3];
+        let packet = VCLPacket::new(1, prev.clone(), b"test".to_vec(), [0; 24]);
+        
+        assert!(packet.validate_chain(&prev));
+        assert!(!packet.validate_chain(&[4, 5, 6]));
+    }
+
+    #[test]
+    fn test_serialize_deserialize() {
+        let original = VCLPacket::new(42, vec![9; 32], b"payload".to_vec(), [7; 24]);
+        let bytes = original.serialize();
+        let restored = VCLPacket::deserialize(&bytes).unwrap();
+        
+        assert_eq!(original.sequence, restored.sequence);
+        assert_eq!(original.payload, restored.payload);
+        assert_eq!(original.nonce, restored.nonce);
+    }
+}
