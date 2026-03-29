@@ -2,6 +2,8 @@ use crate::packet::VCLPacket;
 use crate::crypto::KeyPair;
 use crate::handshake::{HandshakeState, HandshakeMessage};
 use ed25519_dalek::SigningKey;
+use x25519_dalek::EphemeralSecret;
+use rand::rngs::OsRng;
 use tokio::net::UdpSocket;
 use std::net::SocketAddr;
 
@@ -102,7 +104,7 @@ impl VCLConnection {
         Ok(())
     }
 
-    pub async fn send(&mut self,  &[u8]) -> Result<(), String> {
+    pub async fn send(&mut self, data: &[u8]) -> Result<(), String> {
         let mut packet = VCLPacket::new(self.sequence, self.last_hash.clone(), data.to_vec());
         packet.sign(&self.keypair.private_key);
         let serialized = packet.serialize();
