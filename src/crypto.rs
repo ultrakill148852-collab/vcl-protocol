@@ -28,16 +28,20 @@ impl KeyPair {
 pub fn encrypt_payload(data: &[u8], key: &[u8; 32]) -> (Vec<u8>, [u8; 24]) {
     let cipher = XChaCha20Poly1305::new_from_slice(key).unwrap();
     let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
-    let nonce_bytes: [u8; 24] = nonce.as_ref().try_into().unwrap();
+    let nonce_bytes: [u8; 24] = (*nonce).into();
+    
     let ciphertext = cipher.encrypt(&nonce, data).unwrap();
+    
     (ciphertext, nonce_bytes)
 }
 
 pub fn decrypt_payload(ciphertext: &[u8], key: &[u8; 32], nonce: &[u8; 24]) -> Result<Vec<u8>, String> {
     let cipher = XChaCha20Poly1305::new_from_slice(key).unwrap();
     let nonce = XNonce::from_slice(nonce);
+    
     let plaintext = cipher.decrypt(nonce, ciphertext)
         .map_err(|e| format!("Decryption failed: {}", e))?;
+    
     Ok(plaintext)
 }
 
