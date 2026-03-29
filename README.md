@@ -22,7 +22,7 @@
 
 VCL Protocol is a transport protocol where each packet cryptographically links to the previous one, creating an immutable chain of data transmission. Inspired by blockchain principles, optimized for real-time networking.
 
-**Now with X25519 Handshake + XChaCha20-Poly1305 Encryption** — secure key exchange and authenticated encryption without pre-shared secrets!
+**Now with X25519 Handshake + XChaCha20-Poly1305 Encryption + Replay Protection** — secure key exchange, authenticated encryption, and protection against packet replay attacks!
 
 ---
 
@@ -34,9 +34,10 @@ VCL Protocol is a transport protocol where each packet cryptographically links t
 | ✍️ Ed25519 Signatures | Fast and secure digital signatures |
 | 🔑 X25519 Handshake | Ephemeral key exchange, no pre-shared keys needed |
 | 🔒 XChaCha20-Poly1305 | Authenticated encryption for all payloads |
+| 🛡️ Replay Protection | Sequence number + nonce tracking prevents packet replay |
 | ✅ Chain Validation | Automatic integrity checking |
 | ⚡ UDP Transport | Low latency, high performance |
-| 🛡️ Tamper-Evident | Any modification is immediately detectable |
+| 🧪 Full Test Suite | 14 passing tests (unit + integration) |
 
 ---
 
@@ -68,6 +69,13 @@ VCL Protocol is a transport protocol where each packet cryptographically links t
     Send: plaintext → encrypt(XChaCha20) → sign(Ed25519) → send
     Recv: receive → verify(Ed25519) → decrypt(XChaCha20) → plaintext
 
+### Replay Protection
+
+    1. Check sequence number (must be > last received)
+    2. Check nonce (must not be in seen_nonces set)
+    3. Store nonce in sliding window (1000 entries)
+    4. Reject packet if either check fails
+
 ---
 
 ## 🚀 Quick Start
@@ -85,7 +93,11 @@ VCL Protocol is a transport protocol where each packet cryptographically links t
 
     cargo run
 
-### Expected Output
+### Run Tests
+
+    cargo test
+
+### Expected Output (Demo)
 
     === VCL Protocol Demo ===
 
@@ -105,13 +117,28 @@ VCL Protocol is a transport protocol where each packet cryptographically links t
 
     === Demo Complete ===
 
+### Expected Output (Tests)
+
+    running 10 tests
+    test crypto::tests::test_hash_data ... ok
+    test crypto::tests::test_decrypt_wrong_key_fails ... ok
+    ...
+    test result: ok. 10 passed; 0 failed
+
+    running 4 tests
+    test test_client_server_basic ... ok
+    test test_encryption_integrity ... ok
+    test test_chain_validation ... ok
+    test test_replay_protection ... ok
+    test result: ok. 4 passed; 0 failed
+
 ---
 
 ## 📦 Packet Structure
 
     pub struct VCLPacket {
         pub version: u8,           // Protocol version
-        pub sequence: u64,         // Packet sequence number
+        pub sequence: u64,         // Packet sequence number (monotonic)
         pub prev_hash: Vec<u8>,    // SHA-256 hash of previous packet
         pub nonce: [u8; 24],       // XChaCha20 nonce for encryption
         pub payload: Vec<u8>,      // Encrypted data payload
@@ -132,7 +159,7 @@ Verify integrity of game events and detect tampering in real-time.
 Cryptographically proven data integrity for compliance and debugging.
 
 ### 🔐 Secure Communications
-Authenticated and encrypted channel with end-to-end verification and ephemeral key exchange.
+Authenticated and encrypted channel with end-to-end verification, ephemeral key exchange, and replay protection.
 
 ---
 
@@ -144,6 +171,7 @@ Authenticated and encrypted channel with end-to-end verification and ephemeral k
 - **Key Exchange:** X25519 (Elliptic-curve Diffie-Hellman)
 - **Encryption:** XChaCha20-Poly1305 (AEAD)
 - **Key Generation:** CSPRNG (Cryptographically Secure PRNG)
+- **Replay Protection:** Sequence number validation + nonce tracking (1000-entry window)
 
 ### Transport
 - **Protocol:** UDP
@@ -166,8 +194,14 @@ Authenticated and encrypted channel with end-to-end verification and ephemeral k
 
 ## 🛠️ Development
 
-    # Run tests
+    # Run all tests
     cargo test
+
+    # Run unit tests only
+    cargo test --lib
+
+    # Run integration tests only
+    cargo test --test integration_test
 
     # Format code
     cargo fmt
