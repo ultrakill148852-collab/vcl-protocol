@@ -1,128 +1,100 @@
-use sha2::{Sha256, Digest};
-use ed25519_dalek::{SigningKey, VerifyingKey, Signature, Signer, Verifier};
-use serde::{Serialize, Deserialize};
+use ed25519_dalek::SigningKey;
+use rand::rngs::OsRng;
+use rand::RngCore;
+use chacha20poly1305::{XChaCha20Poly1305, KeyInit, AeadCore};
+use chacha20poly1305::aead::Aead;
+use chacha20poly1305::XNonce;
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct VCLPacket {
-    pub version: u8,
-    pub sequence: u64,
-    pub prev_hash: Vec<u8>,
-    pub nonce: [u8; 24],
-    pub payload: Vec<u8>,
-    pub signature: Vec<u8>,
+#[derive(Clone, Debug)]
+pub struct KeyPair {
+    pub public_key: Vec<u8>,
+    pub private_key: Vec<u8>,
 }
 
-impl VCLPacket {
-    pub fn new(sequence: u64, prev_hash: Vec<u8>, payload: Vec<u8>, nonce: [u8; 24]) -> Self {
-        VCLPacket {
-            version: 1,
-            sequence,
-            prev_hash,
-            nonce,
-            payload,
-            signature: Vec::new(),
+impl KeyPair {
+    pub fn generate() -> Self {
+        let mut secret_bytes = [0u8; 32];
+        OsRng.fill_bytes(&mut secret_bytes);
+        let signing_key = SigningKey::from_bytes(&secret_bytes);
+        let verifying_key = signing_key.verifying_key();
+        
+        KeyPair {
+            public_key: verifying_key.to_bytes().to_vec(),
+            private_key: signing_key.to_bytes().to_vec(),
         }
     }
+}
 
-    pub fn compute_hash(&self) -> Vec<u8> {
-        let mut hasher = Sha256::new();
-        hasher.update(self.version.to_be_bytes());
-        hasher.update(self.sequence.to_be_bytes());
-        hasher.update(&self.prev_hash);
-        hasher.update(&self.nonce);
-        hasher.update(&self.payload);
-        hasher.finalize().to_vec()
-    }
+pub fn encrypt_payload(data: &[u8], key: &[u8; 32]) -> (Vec<u8>, [u8; 24]) {
+    let cipher = XChaCha20Poly1305::new_from_slice(key).unwrap();
+    let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+    let mut nonce_bytes = [0u8; 24];
+    nonce_bytes.copy_from_slice(nonce.as_slice());
+    
+    let ciphertext = cipher.encrypt(&nonce, data).unwrap();
+    
+    (ciphertext, nonce_bytes)
+}
 
-    pub fn sign(&mut self, private_key: &[u8]) {
-        let key_bytes: &[u8; 32] = private_key.try_into().unwrap();
-        let signing_key = SigningKey::from_bytes(key_bytes);
-        let hash = self.compute_hash();
-        let signature: Signature = signing_key.sign(&hash);
-        self.signature = signature.to_bytes().to_vec();
-    }
+pub fn decrypt_payload(ciphertext: &[u8], key: &[u8; 32], nonce: &[u8; 24]) -> Result<Vec<u8>, String> {
+    let cipher = XChaCha20Poly1305::new_from_slice(key).unwrap();
+    let nonce = XNonce::from_slice(nonce);
+    
+    let plaintext = cipher.decrypt(nonce, ciphertext)
+        .map_err(|e| format!("Decryption failed: {}", e))?;
+    
+    Ok(plaintext)
+}
 
-    pub fn verify(&self, public_key: &[u8]) -> bool {
-        if self.signature.len() != 64 {
-            return false;
-        }
-        let key_bytes: &[u8; 32] = public_key.try_into().unwrap();
-        let verifying_key = VerifyingKey::from_bytes(key_bytes).unwrap();
-        let sig_bytes: &[u8; 64] = self.signature.as_slice().try_into().unwrap();
-        let signature = Signature::from_bytes(sig_bytes);
-        let hash = self.compute_hash();
-        verifying_key.verify(&hash, &signature).is_ok()
-    }
-
-    pub fn validate_chain(&self, expected_prev_hash: &[u8]) -> bool {
-        self.prev_hash == expected_prev_hash
-    }
-
-    pub fn serialize(&self) -> Vec<u8> {
-        bincode::serialize(self).unwrap()
-    }
-
-    pub fn deserialize( &[u8]) -> Result<Self, String> {
-        bincode::deserialize(data).map_err(|e| e.to_string())
-    }
+pub fn hash_data(data: &[u8]) -> Vec<u8> {
+    use sha2::{Sha256, Digest};
+    Sha256::new().chain_update(data).finalize().to_vec()
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::crypto::KeyPair;
     use super::*;
 
-    fn test_keypair() -> KeyPair {
-        KeyPair::generate()
+    #[test]
+    fn test_keypair_generate() {
+        let kp1 = KeyPair::generate();
+        let kp2 = KeyPair::generate();
+        assert_eq!(kp1.public_key.len(), 32);
+        assert_eq!(kp1.private_key.len(), 32);
+        assert_ne!(kp1.public_key, kp2.public_key);
     }
 
     #[test]
-    fn test_packet_new() {
-        let packet = VCLPacket::new(1, vec![0; 32], b"test".to_vec(), [0; 24]);
-        assert_eq!(packet.version, 1);
-        assert_eq!(packet.sequence, 1);
-        assert_eq!(packet.payload, b"test");
+    fn test_encrypt_decrypt() {
+        let key = [1u8; 32];
+        let data = b"Hello, VCL!";
+        
+        let (ciphertext, nonce) = encrypt_payload(data, &key);
+        let decrypted = decrypt_payload(&ciphertext, &key, &nonce).unwrap();
+        
+        assert_eq!(data, decrypted.as_slice());
     }
 
     #[test]
-    fn test_compute_hash() {
-        let p1 = VCLPacket::new(1, vec![0; 32], b"A".to_vec(), [0; 24]);
-        let p2 = VCLPacket::new(1, vec![0; 32], b"B".to_vec(), [0; 24]);
-        assert_ne!(p1.compute_hash(), p2.compute_hash());
+    fn test_decrypt_wrong_key_fails() {
+        let key1 = [1u8; 32];
+        let key2 = [2u8; 32];
+        let data = b"Secret message";
+        
+        let (ciphertext, nonce) = encrypt_payload(data, &key1);
+        let result = decrypt_payload(&ciphertext, &key2, &nonce);
+        
+        assert!(result.is_err());
     }
 
     #[test]
-    fn test_sign_verify() {
-        let kp = test_keypair();
-        let mut packet = VCLPacket::new(1, vec![0; 32], b"test".to_vec(), [0; 24]);
-        packet.sign(&kp.private_key);
-        assert!(packet.verify(&kp.public_key));
-    }
-
-    #[test]
-    fn test_verify_wrong_key_fails() {
-        let kp1 = test_keypair();
-        let kp2 = test_keypair();
-        let mut packet = VCLPacket::new(1, vec![0; 32], b"test".to_vec(), [0; 24]);
-        packet.sign(&kp1.private_key);
-        assert!(!packet.verify(&kp2.public_key));
-    }
-
-    #[test]
-    fn test_validate_chain() {
-        let prev = vec![1, 2, 3];
-        let packet = VCLPacket::new(1, prev.clone(), b"test".to_vec(), [0; 24]);
-        assert!(packet.validate_chain(&prev));
-        assert!(!packet.validate_chain(&[4, 5, 6]));
-    }
-
-    #[test]
-    fn test_serialize_deserialize() {
-        let original = VCLPacket::new(42, vec![9; 32], b"payload".to_vec(), [7; 24]);
-        let bytes = original.serialize();
-        let restored = VCLPacket::deserialize(&bytes).unwrap();
-        assert_eq!(original.sequence, restored.sequence);
-        assert_eq!(original.payload, restored.payload);
-        assert_eq!(original.nonce, restored.nonce);
+    fn test_hash_data() {
+        let h1 = hash_data(b"test");
+        let h2 = hash_data(b"test");
+        let h3 = hash_data(b"Test");
+        
+        assert_eq!(h1, h2);
+        assert_ne!(h1, h3);
+        assert_eq!(h1.len(), 32);
     }
 }
