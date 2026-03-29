@@ -25,10 +25,11 @@ impl KeyPair {
     }
 }
 
-pub fn encrypt_payload(data: &[u8], key: &[u8; 32]) -> (Vec<u8>, [u8; 24]) {
+pub fn encrypt_payload( &[u8], key: &[u8; 32]) -> (Vec<u8>, [u8; 24]) {
     let cipher = XChaCha20Poly1305::new_from_slice(key).unwrap();
     let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
-    let nonce_bytes: [u8; 24] = (*nonce).into();
+    let mut nonce_bytes = [0u8; 24];
+    nonce_bytes.copy_from_slice(nonce.as_slice());
     
     let ciphertext = cipher.encrypt(&nonce, data).unwrap();
     
@@ -45,7 +46,7 @@ pub fn decrypt_payload(ciphertext: &[u8], key: &[u8; 32], nonce: &[u8; 24]) -> R
     Ok(plaintext)
 }
 
-pub fn hash_data(data: &[u8]) -> Vec<u8> {
+pub fn hash_data( &[u8]) -> Vec<u8> {
     use sha2::{Sha256, Digest};
     Sha256::new().chain_update(data).finalize().to_vec()
 }
