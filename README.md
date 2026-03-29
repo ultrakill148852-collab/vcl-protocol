@@ -2,6 +2,14 @@
 
 **Verified Commit Link** — Cryptographically chained packet transport protocol
 
+---
+
+## 📚 Documentation
+
+**[README](README.md)** | **[Usage Guide](USAGE.md)** | **[API Reference](docs/api.md)** | **[Examples](docs/examples.md)**
+
+---
+
 [![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://www.rust-lang.org)
 [![Build](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
 [![Tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)]()
