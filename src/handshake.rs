@@ -20,35 +20,6 @@ impl HandshakeState {
         }
     }
 
-    pub fn create_client_hello() -> (HandshakeMessage, EphemeralSecret) {
-        let ephemeral = EphemeralSecret::random_from_rng(OsRng);
-        let public = PublicKey::from(&ephemeral);
-        let msg = HandshakeMessage::ClientHello {
-            public_key: public.to_bytes(),
-        };
-        (msg, ephemeral)
-    }
-
-    pub fn process_client_hello(ephemeral: EphemeralSecret, client_public: [u8; 32]) -> (HandshakeMessage, Option<[u8; 32]>) {
-        let server_public = PublicKey::from(&ephemeral);
-        
-        let client_pk = PublicKey::from(client_public);
-        let shared: SharedSecret = ephemeral.diffie_hellman(&client_pk);
-        let shared_bytes = shared.to_bytes();
-        
-        let msg = HandshakeMessage::ServerHello {
-            public_key: server_public.to_bytes(),
-        };
-        
-        (msg, Some(shared_bytes))
-    }
-
-    pub fn process_server_hello(ephemeral: EphemeralSecret, server_public: [u8; 32]) -> Option<[u8; 32]> {
-        let server_pk = PublicKey::from(server_public);
-        let shared: SharedSecret = ephemeral.diffie_hellman(&server_pk);
-        Some(shared.to_bytes())
-    }
-
     pub fn get_shared_secret(&self) -> Option<[u8; 32]> {
         self.shared_secret
     }
@@ -60,4 +31,31 @@ impl HandshakeState {
     pub fn is_complete(&self) -> bool {
         self.shared_secret.is_some()
     }
+}
+
+// Вынесено наружу — теперь можно импортировать как crate::handshake::create_client_hello
+pub fn create_client_hello() -> (HandshakeMessage, EphemeralSecret) {
+    let ephemeral = EphemeralSecret::random_from_rng(OsRng);
+    let public = PublicKey::from(&ephemeral);
+    let msg = HandshakeMessage::ClientHello {
+        public_key: public.to_bytes(),
+    };
+    (msg, ephemeral)
+}
+
+pub fn process_client_hello(ephemeral: EphemeralSecret, client_public: [u8; 32]) -> (HandshakeMessage, Option<[u8; 32]>) {
+    let server_public = PublicKey::from(&ephemeral);
+    let client_pk = PublicKey::from(client_public);
+    let shared: SharedSecret = ephemeral.diffie_hellman(&client_pk);
+    let shared_bytes = shared.to_bytes();
+    let msg = HandshakeMessage::ServerHello {
+        public_key: server_public.to_bytes(),
+    };
+    (msg, Some(shared_bytes))
+}
+
+pub fn process_server_hello(ephemeral: EphemeralSecret, server_public: [u8; 32]) -> Option<[u8; 32]> {
+    let server_pk = PublicKey::from(server_public);
+    let shared: SharedSecret = ephemeral.diffie_hellman(&server_pk);
+    Some(shared.to_bytes())
 }
