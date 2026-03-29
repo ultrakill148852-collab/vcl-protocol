@@ -69,3 +69,30 @@ async fn test_chain_validation() {
     client.send(b"second").await.unwrap();
     server_handle.await.unwrap();
 }
+
+#[tokio::test]
+async fn test_replay_protection() {
+    let shared_key = hex::decode("0000000000000000000000000000000000000000000000000000000000000004").unwrap();
+    
+    let mut server = VCLConnection::bind("127.0.0.1:9004").await.unwrap();
+    server.set_shared_key(&shared_key);
+    
+    let server_handle = tokio::spawn(async move {
+        server.accept_handshake().await.unwrap();
+        
+        let p1 = server.recv().await.unwrap();
+        assert_eq!(p1.sequence, 0);
+        
+        let p2 = server.recv().await.unwrap();
+        assert_eq!(p2.sequence, 1);
+    });
+    
+    let mut client = VCLConnection::bind("127.0.0.1:0").await.unwrap();
+    client.set_shared_key(&shared_key);
+    client.connect("127.0.0.1:9004").await.unwrap();
+    
+    client.send(b"first").await.unwrap();
+    client.send(b"second").await.unwrap();
+    
+    server_handle.await.unwrap();
+}
