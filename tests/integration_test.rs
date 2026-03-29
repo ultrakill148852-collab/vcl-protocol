@@ -52,11 +52,9 @@ async fn test_chain_validation() {
     let server_handle = tokio::spawn(async move {
         server.accept_handshake().await.unwrap();
         
-        // First packet should succeed
         let p1 = server.recv().await.unwrap();
         assert_eq!(p1.sequence, 0);
         
-        // Second packet should succeed (valid chain)
         let p2 = server.recv().await.unwrap();
         assert_eq!(p2.sequence, 1);
     });
