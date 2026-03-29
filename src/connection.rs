@@ -1,6 +1,6 @@
 use crate::packet::VCLPacket;
 use crate::crypto::{KeyPair, encrypt_payload, decrypt_payload};
-use crate::handshake::{HandshakeMessage, process_client_hello, process_server_hello};
+use crate::handshake::{HandshakeMessage, HandshakeState, create_client_hello, process_client_hello, process_server_hello};
 use ed25519_dalek::SigningKey;
 use x25519_dalek::EphemeralSecret;
 use rand::rngs::OsRng;
@@ -46,7 +46,7 @@ impl VCLConnection {
         let parsed: SocketAddr = addr.parse().map_err(|e: std::net::AddrParseError| e.to_string())?;
         self.peer_addr = Some(parsed);
         
-        let (hello_msg, ephemeral) = HandshakeMessage::create_client_hello();
+        let (hello_msg, ephemeral) = create_client_hello();
         
         let hello_bytes = bincode::serialize(&hello_msg).map_err(|e| e.to_string())?;
         self.socket.send_to(&hello_bytes, parsed).await.map_err(|e| e.to_string())?;
@@ -97,15 +97,10 @@ impl VCLConnection {
         Ok(())
     }
 
-    pub async fn send(&mut self, data: &[u8]) -> Result<(), String> {
-        // Generate random nonce
-        let nonce: [u8; 24] = rand::random();
-        
-        // Encrypt payload
+    pub async fn send(&mut self,  &[u8]) -> Result<(), String> {
         let key = self.shared_secret.ok_or("No shared secret")?;
         let (encrypted_payload, nonce) = encrypt_payload(data, &key);
         
-        // Create packet with encrypted payload
         let mut packet = VCLPacket::new(self.sequence, self.last_hash.clone(), encrypted_payload, nonce);
         packet.sign(&self.keypair.private_key);
         
@@ -127,18 +122,15 @@ impl VCLConnection {
         
         let mut packet = VCLPacket::deserialize(&buf[..len])?;
         
-        // Validate chain
         if !packet.validate_chain(&self.last_hash) {
             return Err("Chain validation failed".to_string());
         }
         
-        // Verify signature
         let verify_key = self.peer_public_key.as_ref().unwrap_or(&self.keypair.public_key);
         if !packet.verify(verify_key) {
             return Err("Signature validation failed".to_string());
         }
         
-        // Decrypt payload
         let key = self.shared_secret.ok_or("No shared secret")?;
         let decrypted = decrypt_payload(&packet.payload, &key, &packet.nonce)?;
         packet.payload = decrypted;
