@@ -50,3 +50,51 @@ pub fn hash_data(data: &[u8]) -> Vec<u8> {
     use sha2::{Sha256, Digest};
     Sha256::new().chain_update(data).finalize().to_vec()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_keypair_generate() {
+        let kp1 = KeyPair::generate();
+        let kp2 = KeyPair::generate();
+        assert_eq!(kp1.public_key.len(), 32);
+        assert_eq!(kp1.private_key.len(), 32);
+        assert_ne!(kp1.public_key, kp2.public_key);
+    }
+
+    #[test]
+    fn test_encrypt_decrypt() {
+        let key = [1u8; 32];
+        let data = b"Hello, VCL!";
+        
+        let (ciphertext, nonce) = encrypt_payload(data, &key);
+        let decrypted = decrypt_payload(&ciphertext, &key, &nonce).unwrap();
+        
+        assert_eq!(data, decrypted.as_slice());
+    }
+
+    #[test]
+    fn test_decrypt_wrong_key_fails() {
+        let key1 = [1u8; 32];
+        let key2 = [2u8; 32];
+        let data = b"Secret message";
+        
+        let (ciphertext, nonce) = encrypt_payload(data, &key1);
+        let result = decrypt_payload(&ciphertext, &key2, &nonce);
+        
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_hash_data() {
+        let h1 = hash_data(b"test");
+        let h2 = hash_data(b"test");
+        let h3 = hash_data(b"Test");
+        
+        assert_eq!(h1, h2);
+        assert_ne!(h1, h3);
+        assert_eq!(h1.len(), 32);
+    }
+}
