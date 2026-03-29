@@ -120,7 +120,7 @@ impl VCLConnection {
             self.peer_addr = Some(addr);
         }
         
-        let mut packet = VCLPacket::deserialize(&buf[..len])?;
+        let packet = VCLPacket::deserialize(&buf[..len])?;
         
         if !packet.validate_chain(&self.last_hash) {
             return Err("Chain validation failed".to_string());
@@ -131,12 +131,19 @@ impl VCLConnection {
             return Err("Signature validation failed".to_string());
         }
         
+        self.last_hash = packet.compute_hash();
+        
         let key = self.shared_secret.ok_or("No shared secret")?;
         let decrypted = decrypt_payload(&packet.payload, &key, &packet.nonce)?;
-        packet.payload = decrypted;
         
-        self.last_hash = packet.compute_hash();
-        Ok(packet)
+        Ok(VCLPacket {
+            version: packet.version,
+            sequence: packet.sequence,
+            prev_hash: packet.prev_hash,
+            nonce: packet.nonce,
+            payload: decrypted,
+            signature: packet.signature,
+        })
     }
 
     pub fn get_public_key(&self) -> Vec<u8> {
