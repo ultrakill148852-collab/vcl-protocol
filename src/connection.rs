@@ -1,5 +1,6 @@
 use crate::packet::VCLPacket;
 use crate::crypto::KeyPair;
+use crate::handshake::{HandshakeState, HandshakeMessage};
 use ed25519_dalek::SigningKey;
 use tokio::net::UdpSocket;
 use std::net::SocketAddr;
@@ -11,6 +12,8 @@ pub struct VCLConnection {
     last_hash: Vec<u8>,
     peer_addr: Option<SocketAddr>,
     peer_public_key: Option<Vec<u8>>,
+    shared_secret: Option<[u8; 32]>,
+    is_server: bool,
 }
 
 impl VCLConnection {
@@ -23,6 +26,8 @@ impl VCLConnection {
             last_hash: vec![0; 32],
             peer_addr: None,
             peer_public_key: None,
+            shared_secret: None,
+            is_server: false,
         })
     }
 
@@ -38,6 +43,59 @@ impl VCLConnection {
     pub async fn connect(&mut self, addr: &str) -> Result<(), String> {
         let parsed: SocketAddr = addr.parse().map_err(|e: std::net::AddrParseError| e.to_string())?;
         self.peer_addr = Some(parsed);
+        
+        // HANDSHAKE: Client
+        let mut handshake = HandshakeState::new(true);
+        let (hello_msg, _ephemeral) = HandshakeState::create_client_hello();
+        
+        // Отправляем ClientHello
+        let hello_bytes = bincode::serialize(&hello_msg).map_err(|e| e.to_string())?;
+        self.socket.send_to(&hello_bytes, parsed).await.map_err(|e| e.to_string())?;
+        
+        // Ждём ServerHello
+        let mut buf = vec![0u8; 65535];
+        let (len, _) = self.socket.recv_from(&mut buf).await.map_err(|e| e.to_string())?;
+        let server_hello: HandshakeMessage = bincode::deserialize(&buf[..len]).map_err(|e| e.to_string())?;
+        
+        if let HandshakeMessage::ServerHello { public_key } = server_hello {
+            if !handshake.process_server_hello(&public_key) {
+                return Err("Handshake failed".to_string());
+            }
+        } else {
+            return Err("Expected ServerHello".to_string());
+        }
+        
+        // Сохраняем shared_secret
+        self.shared_secret = handshake.get_shared_secret();
+        
+        Ok(())
+    }
+
+    pub async fn accept_handshake(&mut self) -> Result<(), String> {
+        // HANDSHAKE: Server
+        let mut handshake = HandshakeState::new(false);
+        
+        // Ждём ClientHello
+        let mut buf = vec![0u8; 65535];
+        let (len, addr) = self.socket.recv_from(&mut buf).await.map_err(|e| e.to_string())?;
+        self.peer_addr = Some(addr);
+        
+        let client_hello: HandshakeMessage = bincode::deserialize(&buf[..len]).map_err(|e| e.to_string())?;
+        
+        if let HandshakeMessage::ClientHello { public_key } = client_hello {
+            let server_hello = handshake.process_client_hello(&public_key);
+            
+            // Отправляем ServerHello
+            let hello_bytes = bincode::serialize(&server_hello).map_err(|e| e.to_string())?;
+            self.socket.send_to(&hello_bytes, addr).await.map_err(|e| e.to_string())?;
+            
+            // Сохраняем shared_secret
+            self.shared_secret = handshake.get_shared_secret();
+            self.is_server = true;
+        } else {
+            return Err("Expected ClientHello".to_string());
+        }
+        
         Ok(())
     }
 
@@ -72,5 +130,9 @@ impl VCLConnection {
 
     pub fn get_public_key(&self) -> Vec<u8> {
         self.keypair.public_key.clone()
+    }
+
+    pub fn get_shared_secret(&self) -> Option<[u8; 32]> {
+        self.shared_secret
     }
 }
