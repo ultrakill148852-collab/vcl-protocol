@@ -1,6 +1,7 @@
 use x25519_dalek::{EphemeralSecret, PublicKey, SharedSecret};
 use rand::rngs::OsRng;
 use serde::{Serialize, Deserialize};
+use crate::error::VCLError;  // ← Добавил для будущей совместимости
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum HandshakeMessage {
@@ -33,7 +34,6 @@ impl HandshakeState {
     }
 }
 
-// Вынесено наружу — теперь можно импортировать как crate::handshake::create_client_hello
 pub fn create_client_hello() -> (HandshakeMessage, EphemeralSecret) {
     let ephemeral = EphemeralSecret::random_from_rng(OsRng);
     let public = PublicKey::from(&ephemeral);
