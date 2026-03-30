@@ -1,3 +1,4 @@
+mod error;
 mod packet;
 mod crypto;
 mod connection;
