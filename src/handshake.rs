@@ -1,7 +1,6 @@
 use x25519_dalek::{EphemeralSecret, PublicKey, SharedSecret};
 use rand::rngs::OsRng;
 use serde::{Serialize, Deserialize};
-use crate::error::VCLError;  // ← Добавил для будущей совместимости
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub enum HandshakeMessage {
