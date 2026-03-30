@@ -5,15 +5,24 @@ async fn main() {
     let mut server = VCLConnection::bind("127.0.0.1:8080").await.unwrap();
     println!("Server started on 127.0.0.1:8080");
     
+    // Принимаем handshake
+    println!("Waiting for client handshake...");
     server.accept_handshake().await.unwrap();
-    println!("Client connected!");
+    println!("Client connected! Handshake completed.");
     
-    loop {
+    // Получаем несколько сообщений
+    for i in 1..=5 {
         match server.recv().await {
             Ok(packet) => {
-                println!("Received: {}", String::from_utf8_lossy(&packet.payload));
+                let msg = String::from_utf8_lossy(&packet.payload);
+                println!("Received message {}: {}", i, msg);
             }
-            Err(e) => eprintln!("Error: {}", e),
+            Err(e) => {
+                eprintln!("Error receiving packet: {}", e);
+                break;
+            }
         }
     }
+    
+    println!("Server finished");
 }
