@@ -1,5 +1,12 @@
 # VCL Protocol
 
+ ⚠️ **Development Branch**
+> 
+> You're viewing the `main` branch which is under active development.
+> Code here may be unstable or incomplete.
+> 
+> ✅ **For stable version:** [crates.io/vcl-protocol](https://crates.io/crates/vcl-protocol)
+
 [![Crates.io](https://img.shields.io/crates/v/vcl-protocol.svg)](https://crates.io/crates/vcl-protocol)
 [![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://www.rust-lang.org)
 [![Tests](https://img.shields.io/badge/tests-17/17%20passing-brightgreen.svg)]()
