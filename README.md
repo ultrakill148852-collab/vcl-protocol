@@ -1,10 +1,10 @@
 # VCL Protocol
 
 [![Crates.io](https://img.shields.io/crates/v/vcl-protocol.svg)](https://crates.io/crates/vcl-protocol)
-[![Docs.rs](https://docs.rs/vcl-protocol/badge.svg)](https://docs.rs/vcl-protocol)
 [![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://www.rust-lang.org)
 [![Tests](https://img.shields.io/badge/tests-17/17%20passing-brightgreen.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Status](https://img.shields.io/badge/Status-v0.1.1%20Stable-green.svg)]()
 
 **Verified Commit Link** — Cryptographically chained packet transport protocol
 
@@ -12,7 +12,7 @@
 
 ## 📚 Documentation
 
-**[README](README.md)** | **[Usage Guide](USAGE.md)** | **[API Reference](https://docs.rs/vcl-protocol)** | **[Examples](examples/)** | **[Crates.io](https://crates.io/crates/vcl-protocol)**
+**[README](README.md)** | **[Usage Guide](USAGE.md)** | **[Crates.io](https://crates.io/crates/vcl-protocol)** | **[GitHub](https://github.com/ultrakill148852-collab/vcl-protocol)**
 
 ---
 
@@ -20,7 +20,7 @@
 
 VCL Protocol is a transport protocol where each packet cryptographically links to the previous one, creating an immutable chain of data transmission. Inspired by blockchain principles, optimized for real-time networking.
 
-**v0.1.0 — Production Ready** with X25519 Handshake, XChaCha20-Poly1305 Encryption, Replay Protection, and Session Management!
+**v0.1.1 — Production Ready** with X25519 Handshake, XChaCha20-Poly1305 Encryption, Replay Protection, and Session Management!
 
 **Published on crates.io:** https://crates.io/crates/vcl-protocol
 
