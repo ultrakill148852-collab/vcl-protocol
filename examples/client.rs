@@ -4,12 +4,10 @@ use vcl_protocol::connection::VCLConnection;
 async fn main() {
     let mut client = VCLConnection::bind("127.0.0.1:0").await.unwrap();
     
-    // Подключаемся и делаем handshake
     println!("Connecting to server...");
     client.connect("127.0.0.1:8080").await.unwrap();
     println!("Connected! Handshake completed.");
     
-    // Отправляем несколько сообщений
     for i in 1..=5 {
         let msg = format!("Message {}", i);
         client.send(msg.as_bytes()).await.unwrap();
