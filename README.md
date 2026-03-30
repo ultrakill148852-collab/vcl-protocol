@@ -20,7 +20,7 @@
 
 VCL Protocol is a transport protocol where each packet cryptographically links to the previous one, creating an immutable chain of data transmission. Inspired by blockchain principles, optimized for real-time networking.
 
-**v0.1.1 — Production Ready** with X25519 Handshake, XChaCha20-Poly1305 Encryption, Replay Protection, and Session Management!
+**v0.1.0 — Production Ready** with X25519 Handshake, XChaCha20-Poly1305 Encryption, Replay Protection, and Session Management!
 
 **Published on crates.io:** https://crates.io/crates/vcl-protocol
 
