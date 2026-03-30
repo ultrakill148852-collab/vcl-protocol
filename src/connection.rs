@@ -19,6 +19,7 @@ pub struct VCLConnection {
     is_server: bool,
     last_sequence: u64,
     seen_nonces: HashSet<[u8; 24]>,
+    closed: bool,
 }
 
 impl VCLConnection {
@@ -35,6 +36,7 @@ impl VCLConnection {
             is_server: false,
             last_sequence: 0,
             seen_nonces: HashSet::new(),
+            closed: false,
         })
     }
 
@@ -103,6 +105,10 @@ impl VCLConnection {
     }
 
     pub async fn send(&mut self, data: &[u8]) -> Result<(), String> {
+        if self.closed {
+            return Err("Connection closed".to_string());
+        }
+        
         let key = self.shared_secret.ok_or("No shared secret")?;
         let (encrypted_payload, nonce) = encrypt_payload(data, &key);
         
@@ -119,6 +125,10 @@ impl VCLConnection {
     }
 
     pub async fn recv(&mut self) -> Result<VCLPacket, String> {
+        if self.closed {
+            return Err("Connection closed".to_string());
+        }
+        
         let mut buf = vec![0u8; 65535];
         let (len, addr) = self.socket.recv_from(&mut buf).await.map_err(|e| e.to_string())?;
         if self.peer_addr.is_none() {
@@ -163,6 +173,25 @@ impl VCLConnection {
             payload: decrypted,
             signature: packet.signature,
         })
+    }
+
+    pub fn close(&mut self) -> Result<(), String> {
+        if self.closed {
+            return Err("Connection already closed".to_string());
+        }
+        
+        self.closed = true;
+        self.sequence = 0;
+        self.last_hash = vec![0; 32];
+        self.last_sequence = 0;
+        self.seen_nonces.clear();
+        self.shared_secret = None;
+        
+        Ok(())
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.closed
     }
 
     pub fn get_public_key(&self) -> Vec<u8> {
