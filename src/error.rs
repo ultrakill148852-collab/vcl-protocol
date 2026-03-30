@@ -54,6 +54,13 @@ impl fmt::Display for VCLError {
 
 impl std::error::Error for VCLError {}
 
+// ← ДОБАВЛЕНО: конвертация в String для совместимости с ? в connection.rs
+impl From<VCLError> for String {
+    fn from(err: VCLError) -> Self {
+        err.to_string()
+    }
+}
+
 // Конвертация из String для удобства
 impl From<String> for VCLError {
     fn from(err: String) -> Self {
