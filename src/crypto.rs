@@ -4,6 +4,7 @@ use rand::RngCore;
 use chacha20poly1305::{XChaCha20Poly1305, KeyInit, AeadCore};
 use chacha20poly1305::aead::Aead;
 use chacha20poly1305::XNonce;
+use crate::error::VCLError;
 
 #[derive(Clone, Debug)]
 pub struct KeyPair {
@@ -36,12 +37,12 @@ pub fn encrypt_payload(data: &[u8], key: &[u8; 32]) -> (Vec<u8>, [u8; 24]) {
     (ciphertext, nonce_bytes)
 }
 
-pub fn decrypt_payload(ciphertext: &[u8], key: &[u8; 32], nonce: &[u8; 24]) -> Result<Vec<u8>, String> {
+pub fn decrypt_payload(ciphertext: &[u8], key: &[u8; 32], nonce: &[u8; 24]) -> Result<Vec<u8>, VCLError> {
     let cipher = XChaCha20Poly1305::new_from_slice(key).unwrap();
     let nonce = XNonce::from_slice(nonce);
     
     let plaintext = cipher.decrypt(nonce, ciphertext)
-        .map_err(|e| format!("Decryption failed: {}", e))?;
+        .map_err(|e| VCLError::CryptoError(format!("Decryption failed: {}", e)))?;
     
     Ok(plaintext)
 }
