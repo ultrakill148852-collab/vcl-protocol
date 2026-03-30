@@ -12,9 +12,9 @@
 
 [![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://www.rust-lang.org)
 [![Build](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
-[![Tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-17/17%20passing-brightgreen.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-Prototype-yellow.svg)]()
+[![Status](https://img.shields.io/badge/Status-v0.1.0%20Stable-green.svg)]()
 
 ---
 
@@ -22,7 +22,7 @@
 
 VCL Protocol is a transport protocol where each packet cryptographically links to the previous one, creating an immutable chain of data transmission. Inspired by blockchain principles, optimized for real-time networking.
 
-**Now with X25519 Handshake + XChaCha20-Poly1305 Encryption + Replay Protection** — secure key exchange, authenticated encryption, and protection against packet replay attacks!
+**v0.1.0 — Production Ready** with X25519 Handshake, XChaCha20-Poly1305 Encryption, Replay Protection, and Session Management!
 
 ---
 
@@ -30,51 +30,61 @@ VCL Protocol is a transport protocol where each packet cryptographically links t
 
 | Feature | Description |
 |---------|-------------|
-| 🔐 Cryptographic Chain | Each packet references hash of previous packet |
+| 🔐 Cryptographic Chain | Each packet references hash of previous packet via SHA-256 |
 | ✍️ Ed25519 Signatures | Fast and secure digital signatures |
 | 🔑 X25519 Handshake | Ephemeral key exchange, no pre-shared keys needed |
 | 🔒 XChaCha20-Poly1305 | Authenticated encryption for all payloads |
-| 🛡️ Replay Protection | Sequence number + nonce tracking prevents packet replay |
-| ✅ Chain Validation | Automatic integrity checking |
+| 🛡️ Replay Protection | Sequence numbers + nonce tracking prevent packet replay |
+| 🚪 Session Management | close(), is_closed(), timeout handling |
+| ⏱️ Inactivity Timeout | Auto-close idle connections (configurable) |
+| ✅ Chain Validation | Automatic integrity checking on every packet |
 | ⚡ UDP Transport | Low latency, high performance |
-| 🧪 Full Test Suite | 14 passing tests (unit + integration) |
+| 🧪 Full Test Suite | 17 passing tests (unit + integration) |
 
 ---
 
 ## 🏗️ Architecture
 
-    Packet N        Packet N+1      Packet N+2
-    +--------+     +--------+     +--------+
-    | hash   |     | prev   |     | prev   |
-    | 0x00.. | --> | 0x00.. | --> | 0x3a.. |
-    | sig    |     | sig    |     | sig    |
-    +--------+     +--------+     +--------+
+```
+Packet N        Packet N+1      Packet N+2
++--------+     +--------+     +--------+
+| hash   |     | prev   |     | prev   |
+| 0x00.. | --> | 0x00.. | --> | 0x3a.. |
+| sig    |     | sig    |     | sig    |
++--------+     +--------+     +--------+
 
-    hash(Packet N) -> stored in prev_hash of Packet N+1
-    hash(Packet N+1) -> stored in prev_hash of Packet N+2
+hash(Packet N) -> stored in prev_hash of Packet N+1
+hash(Packet N+1) -> stored in prev_hash of Packet N+2
+```
 
 ### Handshake Flow
 
-    Client                          Server
-       |                               |
-       | -- ClientHello (pubkey) ----> |
-       |                               |
-       | <---- ServerHello (pubkey) -- |
-       |                               |
-       | [Shared secret computed]      |
-       | [Secure channel established]  |
+```
+Client                          Server
+   |                               |
+   | -- ClientHello (pubkey) ----> |
+   |                               |
+   | <---- ServerHello (pubkey) -- |
+   |                               |
+   | [Shared secret computed]      |
+   | [Secure channel established]  |
+```
 
 ### Encryption Flow
 
-    Send: plaintext → encrypt(XChaCha20) → sign(Ed25519) → send
-    Recv: receive → verify(Ed25519) → decrypt(XChaCha20) → plaintext
+```
+Send: plaintext → encrypt(XChaCha20) → sign(Ed25519) → send
+Recv: receive → verify(Ed25519) → decrypt(XChaCha20) → plaintext
+```
 
-### Replay Protection
+### Session Management
 
-    1. Check sequence number (must be > last received)
-    2. Check nonce (must not be in seen_nonces set)
-    3. Store nonce in sliding window (1000 entries)
-    4. Reject packet if either check fails
+```
+- close()        → Gracefully close connection, clear state
+- is_closed()    → Check if connection is closed
+- set_timeout()  → Configure inactivity timeout (default: 60s)
+- last_activity()→ Get timestamp of last send/recv
+```
 
 ---
 
@@ -82,68 +92,79 @@ VCL Protocol is a transport protocol where each packet cryptographically links t
 
 ### Installation
 
-    # Install Rust (if not already installed)
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```bash
+# Install Rust (if not already installed)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-    # Clone repository
-    git clone https://github.com/ultrakill148852-collab/vcl-protocol.git
-    cd vcl-protocol
+# Clone repository
+git clone https://github.com/ultrakill148852-collab/vcl-protocol.git
+cd vcl-protocol
+```
 
 ### Run Demo
 
-    cargo run
+```bash
+cargo run
+```
 
 ### Run Tests
 
-    cargo test
+```bash
+cargo test
+```
 
 ### Expected Output (Demo)
 
-    === VCL Protocol Demo ===
+```
+=== VCL Protocol Demo ===
 
-    Server started on 127.0.0.1:8080
-    Handshake completed
-    Client connected (handshake complete)
-    Client sent: Message 1
-    Server received packet 1: Message 1
-    Client sent: Message 2
-    Server received packet 2: Message 2
-    Client sent: Message 3
-    Server received packet 3: Message 3
-    Client sent: Message 4
-    Server received packet 4: Message 4
-    Client sent: Message 5
-    Server received packet 5: Message 5
+Server started on 127.0.0.1:8080
+Handshake completed
+Client connected (handshake complete)
+Client sent: Message 1
+Server received packet 1: Message 1
+Client sent: Message 2
+Server received packet 2: Message 2
+Client sent: Message 3
+Server received packet 3: Message 3
+Client sent: Message 4
+Server received packet 4: Message 4
+Client sent: Message 5
+Server received packet 5: Message 5
 
-    === Demo Complete ===
+=== Demo Complete ===
+```
 
 ### Expected Output (Tests)
 
-    running 10 tests
-    test crypto::tests::test_hash_data ... ok
-    test crypto::tests::test_decrypt_wrong_key_fails ... ok
-    ...
-    test result: ok. 10 passed; 0 failed
+```
+running 10 tests
+test crypto::tests::test_hash_data ... ok
+...
+test result: ok. 10 passed; 0 failed
 
-    running 4 tests
-    test test_client_server_basic ... ok
-    test test_encryption_integrity ... ok
-    test test_chain_validation ... ok
-    test test_replay_protection ... ok
-    test result: ok. 4 passed; 0 failed
+running 7 tests
+test test_client_server_basic ... ok
+test test_close ... ok
+test test_timeout_getters ... ok
+...
+test result: ok. 7 passed; 0 failed
+```
 
 ---
 
 ## 📦 Packet Structure
 
-    pub struct VCLPacket {
-        pub version: u8,           // Protocol version
-        pub sequence: u64,         // Packet sequence number (monotonic)
-        pub prev_hash: Vec<u8>,    // SHA-256 hash of previous packet
-        pub nonce: [u8; 24],       // XChaCha20 nonce for encryption
-        pub payload: Vec<u8>,      // Encrypted data payload
-        pub signature: Vec<u8>,    // Ed25519 signature
-    }
+```rust
+pub struct VCLPacket {
+    pub version: u8,           // Protocol version
+    pub sequence: u64,         // Monotonic packet sequence number
+    pub prev_hash: Vec<u8>,    // SHA-256 hash of previous packet
+    pub nonce: [u8; 24],       // XChaCha20 nonce for encryption
+    pub payload: Vec<u8>,      // Encrypted data payload
+    pub signature: Vec<u8>,    // Ed25519 signature
+}
+```
 
 ---
 
@@ -159,7 +180,7 @@ Verify integrity of game events and detect tampering in real-time.
 Cryptographically proven data integrity for compliance and debugging.
 
 ### 🔐 Secure Communications
-Authenticated and encrypted channel with end-to-end verification, ephemeral key exchange, and replay protection.
+Authenticated, encrypted channel with replay protection and session management.
 
 ---
 
@@ -171,7 +192,7 @@ Authenticated and encrypted channel with end-to-end verification, ephemeral key 
 - **Key Exchange:** X25519 (Elliptic-curve Diffie-Hellman)
 - **Encryption:** XChaCha20-Poly1305 (AEAD)
 - **Key Generation:** CSPRNG (Cryptographically Secure PRNG)
-- **Replay Protection:** Sequence number validation + nonce tracking (1000-entry window)
+- **Replay Protection:** Sequence validation + nonce tracking (1000-entry window)
 
 ### Transport
 - **Protocol:** UDP
@@ -194,26 +215,28 @@ Authenticated and encrypted channel with end-to-end verification, ephemeral key 
 
 ## 🛠️ Development
 
-    # Run all tests
-    cargo test
+```bash
+# Run all tests
+cargo test
 
-    # Run unit tests only
-    cargo test --lib
+# Run unit tests only
+cargo test --lib
 
-    # Run integration tests only
-    cargo test --test integration_test
+# Run integration tests only
+cargo test --test integration_test
 
-    # Format code
-    cargo fmt
+# Format code
+cargo fmt
 
-    # Linting
-    cargo clippy
+# Linting
+cargo clippy
 
-    # Build release
-    cargo build --release
+# Build release
+cargo build --release
 
-    # Generate docs
-    cargo doc --open
+# Generate docs
+cargo doc --open
+```
 
 ---
 
