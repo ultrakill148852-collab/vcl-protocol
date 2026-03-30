@@ -35,24 +35,44 @@ impl VCLPacket {
         hasher.finalize().to_vec()
     }
 
-    pub fn sign(&mut self, private_key: &[u8]) {
-        let key_bytes: &[u8; 32] = private_key.try_into().unwrap();
+    pub fn sign(&mut self, private_key: &[u8]) -> Result<(), VCLError> {
+        let key_bytes: &[u8; 32] = private_key
+            .try_into()
+            .map_err(|_| VCLError::InvalidKey(
+                format!("Private key must be 32 bytes, got {}", private_key.len())
+            ))?;
         let signing_key = SigningKey::from_bytes(key_bytes);
         let hash = self.compute_hash();
         let signature: Signature = signing_key.sign(&hash);
         self.signature = signature.to_bytes().to_vec();
+        Ok(())
     }
 
-    pub fn verify(&self, public_key: &[u8]) -> bool {
+    pub fn verify(&self, public_key: &[u8]) -> Result<bool, VCLError> {
         if self.signature.len() != 64 {
-            return false;
+            return Err(VCLError::InvalidPacket(
+                format!("Signature must be 64 bytes, got {}", self.signature.len())
+            ));
         }
-        let key_bytes: &[u8; 32] = public_key.try_into().unwrap();
-        let verifying_key = VerifyingKey::from_bytes(key_bytes).unwrap();
-        let sig_bytes: &[u8; 64] = self.signature.as_slice().try_into().unwrap();
+
+        let key_bytes: &[u8; 32] = public_key
+            .try_into()
+            .map_err(|_| VCLError::InvalidKey(
+                format!("Public key must be 32 bytes, got {}", public_key.len())
+            ))?;
+
+        let verifying_key = VerifyingKey::from_bytes(key_bytes)
+            .map_err(|e| VCLError::InvalidKey(e.to_string()))?;
+
+        let sig_bytes: &[u8; 64] = self.signature
+            .as_slice()
+            .try_into()
+            .map_err(|_| VCLError::InvalidPacket("Bad signature length".to_string()))?;
+
         let signature = Signature::from_bytes(sig_bytes);
         let hash = self.compute_hash();
-        verifying_key.verify(&hash, &signature).is_ok()
+
+        Ok(verifying_key.verify(&hash, &signature).is_ok())
     }
 
     pub fn validate_chain(&self, expected_prev_hash: &[u8]) -> bool {
@@ -64,7 +84,8 @@ impl VCLPacket {
     }
 
     pub fn deserialize(data: &[u8]) -> Result<Self, VCLError> {
-        bincode::deserialize(data).map_err(|e| VCLError::SerializationError(e.to_string()))
+        bincode::deserialize(data)
+            .map_err(|e| VCLError::SerializationError(e.to_string()))
     }
 }
 
@@ -96,8 +117,8 @@ mod tests {
     fn test_sign_verify() {
         let kp = test_keypair();
         let mut packet = VCLPacket::new(1, vec![0; 32], b"test".to_vec(), [0; 24]);
-        packet.sign(&kp.private_key);
-        assert!(packet.verify(&kp.public_key));
+        packet.sign(&kp.private_key).unwrap();
+        assert!(packet.verify(&kp.public_key).unwrap());
     }
 
     #[test]
@@ -105,8 +126,8 @@ mod tests {
         let kp1 = test_keypair();
         let kp2 = test_keypair();
         let mut packet = VCLPacket::new(1, vec![0; 32], b"test".to_vec(), [0; 24]);
-        packet.sign(&kp1.private_key);
-        assert!(!packet.verify(&kp2.public_key));
+        packet.sign(&kp1.private_key).unwrap();
+        assert!(!packet.verify(&kp2.public_key).unwrap());
     }
 
     #[test]
