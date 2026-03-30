@@ -1,6 +1,6 @@
 [package]
 name = "vcl-protocol"
-version = "0.1.1"
+version = "0.1.0"
 edition = "2021"
 description = "Cryptographically chained packet transport protocol with SHA-256 integrity, Ed25519 signatures, and XChaCha20-Poly1305 encryption"
 license = "MIT"
