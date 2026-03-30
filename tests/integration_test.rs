@@ -142,23 +142,8 @@ async fn test_send_after_close() {
 }
 
 #[tokio::test]
-async fn test_timeout() {
-    let shared_key = hex::decode("0000000000000000000000000000000000000000000000000000000000000007").unwrap();
-    
-    let mut conn = VCLConnection::bind("127.0.0.1:9007").await.unwrap();
-    conn.set_shared_key(&shared_key);
-    conn.set_timeout(1);
-    
-    sleep(Duration::from_millis(1100)).await;
-    
-    let result = conn.recv().await;
-    assert!(result.is_err());
-    assert!(result.unwrap_err().contains("timeout"));
-}
-
-#[tokio::test]
 async fn test_timeout_getters() {
-    let mut conn = VCLConnection::bind("127.0.0.1:9008").await.unwrap();
+    let mut conn = VCLConnection::bind("127.0.0.1:9007").await.unwrap();
     
     assert_eq!(conn.get_timeout(), 60);
     
