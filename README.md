@@ -11,7 +11,7 @@
 [![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://www.rust-lang.org)
 [![Tests](https://img.shields.io/badge/tests-17/17%20passing-brightgreen.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-v0.1.1%20Stable-green.svg)]()
+[![Status](https://img.shields.io/badge/Status-v0.1.0%20Stable-green.svg)]()
 
 **Verified Commit Link** — Cryptographically chained packet transport protocol
 
