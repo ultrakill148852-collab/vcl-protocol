@@ -1,20 +1,18 @@
 # VCL Protocol
 
+[![Crates.io](https://img.shields.io/crates/v/vcl-protocol.svg)](https://crates.io/crates/vcl-protocol)
+[![Docs.rs](https://docs.rs/vcl-protocol/badge.svg)](https://docs.rs/vcl-protocol)
+[![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://www.rust-lang.org)
+[![Tests](https://img.shields.io/badge/tests-17/17%20passing-brightgreen.svg)]()
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 **Verified Commit Link** — Cryptographically chained packet transport protocol
 
 ---
 
 ## 📚 Documentation
 
-**[README](README.md)** | **[Usage Guide](USAGE.md)** | **[API Reference](docs/api.md)** | **[Examples](docs/examples.md)**
-
----
-
-[![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://www.rust-lang.org)
-[![Build](https://img.shields.io/badge/build-passing-brightgreen.svg)]()
-[![Tests](https://img.shields.io/badge/tests-17/17%20passing-brightgreen.svg)]()
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-v0.1.0%20Stable-green.svg)]()
+**[README](README.md)** | **[Usage Guide](USAGE.md)** | **[API Reference](https://docs.rs/vcl-protocol)** | **[Examples](examples/)** | **[Crates.io](https://crates.io/crates/vcl-protocol)**
 
 ---
 
@@ -23,6 +21,8 @@
 VCL Protocol is a transport protocol where each packet cryptographically links to the previous one, creating an immutable chain of data transmission. Inspired by blockchain principles, optimized for real-time networking.
 
 **v0.1.0 — Production Ready** with X25519 Handshake, XChaCha20-Poly1305 Encryption, Replay Protection, and Session Management!
+
+**Published on crates.io:** https://crates.io/crates/vcl-protocol
 
 ---
 
@@ -96,7 +96,10 @@ Recv: receive → verify(Ed25519) → decrypt(XChaCha20) → plaintext
 # Install Rust (if not already installed)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# Clone repository
+# Add to your project
+cargo add vcl-protocol
+
+# Or clone repository
 git clone https://github.com/ultrakill148852-collab/vcl-protocol.git
 cd vcl-protocol
 ```
@@ -111,28 +114,6 @@ cargo run
 
 ```bash
 cargo test
-```
-
-### Expected Output (Demo)
-
-```
-=== VCL Protocol Demo ===
-
-Server started on 127.0.0.1:8080
-Handshake completed
-Client connected (handshake complete)
-Client sent: Message 1
-Server received packet 1: Message 1
-Client sent: Message 2
-Server received packet 2: Message 2
-Client sent: Message 3
-Server received packet 3: Message 3
-Client sent: Message 4
-Server received packet 4: Message 4
-Client sent: Message 5
-Server received packet 5: Message 5
-
-=== Demo Complete ===
 ```
 
 ### Expected Output (Tests)
@@ -181,6 +162,9 @@ Cryptographically proven data integrity for compliance and debugging.
 
 ### 🔐 Secure Communications
 Authenticated, encrypted channel with replay protection and session management.
+
+### 🌐 VPN Tunnels
+Additional layer of packet integrity and replay protection for VPN protocols.
 
 ---
 
@@ -237,6 +221,21 @@ cargo build --release
 # Generate docs
 cargo doc --open
 ```
+
+### Test Coverage (17/17 passing)
+
+**Unit Tests (10):**
+- crypto: key generation, encryption/decryption, hashing
+- packet: creation, signing, verification, serialization, chain validation
+
+**Integration Tests (7):**
+- client-server basic communication
+- encryption integrity
+- chain validation
+- replay protection
+- close() functionality
+- send after close
+- timeout getters
 
 ---
 
