@@ -2,31 +2,20 @@ use std::fmt;
 
 #[derive(Debug)]
 pub enum VCLError {
-    // Crypto errors
     CryptoError(String),
     SignatureInvalid,
     InvalidKey(String),
-    
-    // Packet errors
     ChainValidationFailed,
     ReplayDetected(String),
     InvalidPacket(String),
-    
-    // Connection errors
     ConnectionClosed,
     Timeout,
     NoPeerAddress,
     NoSharedSecret,
-    
-    // Handshake errors
     HandshakeFailed(String),
     ExpectedClientHello,
     ExpectedServerHello,
-    
-    // Serialization errors
     SerializationError(String),
-    
-    // IO errors
     IoError(String),
 }
 
@@ -54,14 +43,12 @@ impl fmt::Display for VCLError {
 
 impl std::error::Error for VCLError {}
 
-// ← ДОБАВЛЕНО: конвертация в String для совместимости с ? в connection.rs
 impl From<VCLError> for String {
     fn from(err: VCLError) -> Self {
         err.to_string()
     }
 }
 
-// Конвертация из String для удобства
 impl From<String> for VCLError {
     fn from(err: String) -> Self {
         VCLError::CryptoError(err)
