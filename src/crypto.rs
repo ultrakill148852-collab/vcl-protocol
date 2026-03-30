@@ -18,7 +18,6 @@ impl KeyPair {
         OsRng.fill_bytes(&mut secret_bytes);
         let signing_key = SigningKey::from_bytes(&secret_bytes);
         let verifying_key = signing_key.verifying_key();
-        
         KeyPair {
             public_key: verifying_key.to_bytes().to_vec(),
             private_key: signing_key.to_bytes().to_vec(),
@@ -26,25 +25,28 @@ impl KeyPair {
     }
 }
 
-pub fn encrypt_payload(data: &[u8], key: &[u8; 32]) -> (Vec<u8>, [u8; 24]) {
-    let cipher = XChaCha20Poly1305::new_from_slice(key).unwrap();
+pub fn encrypt_payload(data: &[u8], key: &[u8; 32]) -> Result<(Vec<u8>, [u8; 24]), VCLError> {
+    let cipher = XChaCha20Poly1305::new_from_slice(key)
+        .map_err(|e| VCLError::InvalidKey(e.to_string()))?;
     let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
     let mut nonce_bytes = [0u8; 24];
     nonce_bytes.copy_from_slice(nonce.as_slice());
-    
-    let ciphertext = cipher.encrypt(&nonce, data).unwrap();
-    
-    (ciphertext, nonce_bytes)
+
+    let ciphertext = cipher
+        .encrypt(&nonce, data)
+        .map_err(|e| VCLError::CryptoError(format!("Encryption failed: {}", e)))?;
+
+    Ok((ciphertext, nonce_bytes))
 }
 
 pub fn decrypt_payload(ciphertext: &[u8], key: &[u8; 32], nonce: &[u8; 24]) -> Result<Vec<u8>, VCLError> {
-    let cipher = XChaCha20Poly1305::new_from_slice(key).unwrap();
+    let cipher = XChaCha20Poly1305::new_from_slice(key)
+        .map_err(|e| VCLError::InvalidKey(e.to_string()))?;
     let nonce = XNonce::from_slice(nonce);
-    
-    let plaintext = cipher.decrypt(nonce, ciphertext)
-        .map_err(|e| VCLError::CryptoError(format!("Decryption failed: {}", e)))?;
-    
-    Ok(plaintext)
+
+    cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|e| VCLError::CryptoError(format!("Decryption failed: {}", e)))
 }
 
 pub fn hash_data(data: &[u8]) -> Vec<u8> {
@@ -69,10 +71,8 @@ mod tests {
     fn test_encrypt_decrypt() {
         let key = [1u8; 32];
         let data = b"Hello, VCL!";
-        
-        let (ciphertext, nonce) = encrypt_payload(data, &key);
+        let (ciphertext, nonce) = encrypt_payload(data, &key).unwrap();
         let decrypted = decrypt_payload(&ciphertext, &key, &nonce).unwrap();
-        
         assert_eq!(data, decrypted.as_slice());
     }
 
@@ -81,10 +81,8 @@ mod tests {
         let key1 = [1u8; 32];
         let key2 = [2u8; 32];
         let data = b"Secret message";
-        
-        let (ciphertext, nonce) = encrypt_payload(data, &key1);
+        let (ciphertext, nonce) = encrypt_payload(data, &key1).unwrap();
         let result = decrypt_payload(&ciphertext, &key2, &nonce);
-        
         assert!(result.is_err());
     }
 
@@ -93,7 +91,6 @@ mod tests {
         let h1 = hash_data(b"test");
         let h2 = hash_data(b"test");
         let h3 = hash_data(b"Test");
-        
         assert_eq!(h1, h2);
         assert_ne!(h1, h3);
         assert_eq!(h1.len(), 32);
