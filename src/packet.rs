@@ -1,6 +1,7 @@
 use sha2::{Sha256, Digest};
 use ed25519_dalek::{SigningKey, VerifyingKey, Signature, Signer, Verifier};
 use serde::{Serialize, Deserialize};
+use crate::error::VCLError;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct VCLPacket {
@@ -62,8 +63,8 @@ impl VCLPacket {
         bincode::serialize(self).unwrap()
     }
 
-    pub fn deserialize(data: &[u8]) -> Result<Self, String> {
-        bincode::deserialize(data).map_err(|e| e.to_string())
+    pub fn deserialize(data: &[u8]) -> Result<Self, VCLError> {
+        bincode::deserialize(data).map_err(|e| VCLError::SerializationError(e.to_string()))
     }
 }
 
@@ -126,3 +127,7 @@ mod tests {
         assert_eq!(original.nonce, restored.nonce);
     }
 }
+
+
+
+
