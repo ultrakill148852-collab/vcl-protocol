@@ -11,6 +11,7 @@ VCL Protocol is a cryptographically chained packet transport protocol. It ensure
 - Ed25519 digital signatures for authentication
 - XChaCha20-Poly1305 authenticated encryption for all payloads
 - Replay protection via sequence numbers + nonce tracking
+- Session management: close(), timeout, activity tracking
 - UDP transport with Tokio async runtime
 
 ---
@@ -46,8 +47,10 @@ use vcl_protocol::connection::VCLConnection;
 async fn main() {
     let mut server = VCLConnection::bind("127.0.0.1:8080").await.unwrap();
     println!("Server started on 127.0.0.1:8080");
+    
     server.accept_handshake().await.unwrap();
     println!("Client connected!");
+    
     loop {
         match server.recv().await {
             Ok(packet) => {
@@ -67,14 +70,18 @@ use vcl_protocol::connection::VCLConnection;
 #[tokio::main]
 async fn main() {
     let mut client = VCLConnection::bind("127.0.0.1:0").await.unwrap();
+    
     client.connect("127.0.0.1:8080").await.unwrap();
     println!("Connected to server!");
+    
     for i in 1..=5 {
         let msg = format!("Message {}", i);
         client.send(msg.as_bytes()).await.unwrap();
         println!("Sent: {}", msg);
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
+    
+    client.close().unwrap();
 }
 ```
 
@@ -91,6 +98,11 @@ async fn main() {
 | `accept_handshake()` | Accept incoming connection (server side) |
 | `send(data)` | Encrypt, sign, and send packet |
 | `recv()` | Receive, verify, decrypt, and validate packet |
+| `close()` | Gracefully close connection and clear state |
+| `is_closed()` | Check if connection is closed |
+| `set_timeout(secs)` | Set inactivity timeout in seconds |
+| `get_timeout()` | Get current timeout value |
+| `last_activity()` | Get timestamp of last send/recv |
 | `get_public_key()` | Get local Ed25519 public key |
 | `get_shared_secret()` | Get current X25519 shared secret |
 | `set_shared_key(key)` | Set pre-shared key for testing |
@@ -135,11 +147,29 @@ async fn main() {
 - Nonces tracked in sliding window (1000 entries)
 - Duplicate or old packets rejected
 
+### 6. Session Management
+- `close()` clears sensitive state (keys, nonces, hashes)
+- Timeout prevents resource leaks from idle connections
+- `is_closed()` prevents operations on closed connections
+
 ---
 
 ## Configuration ⚙️
 
-Currently configured via code. Future versions will support config files and environment variables.
+### Inactivity Timeout
+
+```rust
+// Set timeout to 30 seconds
+conn.set_timeout(30);
+
+// Get current timeout
+let timeout = conn.get_timeout(); // Returns 30
+
+// Check last activity time
+let last = conn.last_activity();
+```
+
+Default timeout: 60 seconds. Set to 0 to disable.
 
 ### Testing with pre-shared keys
 
@@ -174,8 +204,9 @@ cargo build --release
 
 ### Test Coverage
 - Crypto: key generation, encryption/decryption, hashing
-- Packets: creation, signing, verification, serialization
-- Handshake: X25519 key exchange
+- Packets: creation, signing, verification, serialization, chain validation
+- Handshake: X25519 key exchange, shared secret derivation
+- Session: close(), timeout, state clearing
 - Integration: client-server communication, replay protection
 
 ---
@@ -187,7 +218,7 @@ vcl-protocol/
 ├── src/
 │   ├── main.rs          # Demo application
 │   ├── lib.rs           # Library entry point
-│   ├── connection.rs    # Connection API with replay protection
+│   ├── connection.rs    # Connection API with session management
 │   ├── packet.rs        # Packet structure and validation
 │   ├── crypto.rs        # KeyPair and encryption helpers
 │   └── handshake.rs     # X25519 handshake implementation
@@ -229,19 +260,20 @@ MIT License — see LICENSE file for details.
 
 ## Changelog 🔄
 
-### v0.1.0 (Current)
+### v0.1.0 (Current) — Production Ready ✨
 - Cryptographic chain with SHA-256
 - Ed25519 signatures + X25519 handshake
-- XChaCha20-Poly1305 encryption
-- Replay protection (sequence + nonce)
-- Full test suite (14 tests)
-- Documentation (README + USAGE)
+- XChaCha20-Poly1305 authenticated encryption
+- Replay protection (sequence + nonce tracking)
+- Session management: close(), is_closed(), timeout
+- Full test suite: 17 passing tests (10 unit + 7 integration)
+- Documentation: README + USAGE + API reference
 
 ### Planned for v0.2.0
-- Session management (timeouts, graceful close)
 - Custom error types (VCLError enum)
-- Connection status methods
-- Optional key rotation support
+- Key rotation support
+- Connection pooling
+- WebSocket transport option
 
 ---
 
@@ -249,6 +281,6 @@ MIT License — see LICENSE file for details.
 
 **Made with ❤️ using Rust**
 
-*Secure • Chained • Verified*
+*Secure • Chained • Verified • Production Ready*
 
 </div>
