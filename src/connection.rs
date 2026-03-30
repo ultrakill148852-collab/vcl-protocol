@@ -7,6 +7,7 @@ use rand::rngs::OsRng;
 use tokio::net::UdpSocket;
 use std::net::SocketAddr;
 use std::collections::HashSet;
+use std::time::{Duration, Instant};
 
 pub struct VCLConnection {
     socket: UdpSocket,
@@ -20,6 +21,8 @@ pub struct VCLConnection {
     last_sequence: u64,
     seen_nonces: HashSet<[u8; 24]>,
     closed: bool,
+    last_activity: Instant,
+    timeout_secs: u64,
 }
 
 impl VCLConnection {
@@ -37,7 +40,21 @@ impl VCLConnection {
             last_sequence: 0,
             seen_nonces: HashSet::new(),
             closed: false,
+            last_activity: Instant::now(),
+            timeout_secs: 60,
         })
+    }
+
+    pub fn set_timeout(&mut self, secs: u64) {
+        self.timeout_secs = secs;
+    }
+
+    pub fn get_timeout(&self) -> u64 {
+        self.timeout_secs
+    }
+
+    pub fn last_activity(&self) -> Instant {
+        self.last_activity
     }
 
     pub fn set_shared_key(&mut self, private_key: &[u8]) {
@@ -73,6 +90,7 @@ impl VCLConnection {
             return Err("Expected ServerHello".to_string());
         }
         
+        self.last_activity = Instant::now();
         Ok(())
     }
 
@@ -101,6 +119,7 @@ impl VCLConnection {
             return Err("Expected ClientHello".to_string());
         }
         
+        self.last_activity = Instant::now();
         Ok(())
     }
 
@@ -108,6 +127,8 @@ impl VCLConnection {
         if self.closed {
             return Err("Connection closed".to_string());
         }
+        
+        self.check_timeout()?;
         
         let key = self.shared_secret.ok_or("No shared secret")?;
         let (encrypted_payload, nonce) = encrypt_payload(data, &key);
@@ -121,6 +142,7 @@ impl VCLConnection {
         
         self.last_hash = packet.compute_hash();
         self.sequence += 1;
+        self.last_activity = Instant::now();
         Ok(())
     }
 
@@ -128,6 +150,8 @@ impl VCLConnection {
         if self.closed {
             return Err("Connection closed".to_string());
         }
+        
+        self.check_timeout()?;
         
         let mut buf = vec![0u8; 65535];
         let (len, addr) = self.socket.recv_from(&mut buf).await.map_err(|e| e.to_string())?;
@@ -161,6 +185,7 @@ impl VCLConnection {
         
         self.last_hash = packet.compute_hash();
         self.last_sequence = packet.sequence;
+        self.last_activity = Instant::now();
         
         let key = self.shared_secret.ok_or("No shared secret")?;
         let decrypted = decrypt_payload(&packet.payload, &key, &packet.nonce)?;
@@ -173,6 +198,14 @@ impl VCLConnection {
             payload: decrypted,
             signature: packet.signature,
         })
+    }
+
+    fn check_timeout(&self) -> Result<(), String> {
+        let elapsed = self.last_activity.elapsed();
+        if elapsed.as_secs() > self.timeout_secs {
+            return Err("Connection timeout: no activity for too long".to_string());
+        }
+        Ok(())
     }
 
     pub fn close(&mut self) -> Result<(), String> {
