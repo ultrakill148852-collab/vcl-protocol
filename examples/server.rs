@@ -5,12 +5,10 @@ async fn main() {
     let mut server = VCLConnection::bind("127.0.0.1:8080").await.unwrap();
     println!("Server started on 127.0.0.1:8080");
     
-    // Принимаем handshake
     println!("Waiting for client handshake...");
     server.accept_handshake().await.unwrap();
     println!("Client connected! Handshake completed.");
     
-    // Получаем несколько сообщений
     for i in 1..=5 {
         match server.recv().await {
             Ok(packet) => {
