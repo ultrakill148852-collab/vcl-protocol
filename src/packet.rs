@@ -38,9 +38,7 @@ impl VCLPacket {
     pub fn sign(&mut self, private_key: &[u8]) -> Result<(), VCLError> {
         let key_bytes: &[u8; 32] = private_key
             .try_into()
-            .map_err(|_| VCLError::InvalidKey(
-                format!("Private key must be 32 bytes, got {}", private_key.len())
-            ))?;
+            .map_err(|_| VCLError::InvalidKey("Private key must be 32 bytes".to_string()))?;
         let signing_key = SigningKey::from_bytes(key_bytes);
         let hash = self.compute_hash();
         let signature: Signature = signing_key.sign(&hash);
@@ -50,28 +48,19 @@ impl VCLPacket {
 
     pub fn verify(&self, public_key: &[u8]) -> Result<bool, VCLError> {
         if self.signature.len() != 64 {
-            return Err(VCLError::InvalidPacket(
-                format!("Signature must be 64 bytes, got {}", self.signature.len())
-            ));
+            return Ok(false);
         }
-
         let key_bytes: &[u8; 32] = public_key
             .try_into()
-            .map_err(|_| VCLError::InvalidKey(
-                format!("Public key must be 32 bytes, got {}", public_key.len())
-            ))?;
-
+            .map_err(|_| VCLError::InvalidKey("Public key must be 32 bytes".to_string()))?;
         let verifying_key = VerifyingKey::from_bytes(key_bytes)
-            .map_err(|e| VCLError::InvalidKey(e.to_string()))?;
-
+            .map_err(|e| VCLError::InvalidKey(format!("Invalid public key: {}", e)))?;
         let sig_bytes: &[u8; 64] = self.signature
             .as_slice()
             .try_into()
-            .map_err(|_| VCLError::InvalidPacket("Bad signature length".to_string()))?;
-
+            .map_err(|_| VCLError::InvalidKey("Signature must be 64 bytes".to_string()))?;
         let signature = Signature::from_bytes(sig_bytes);
         let hash = self.compute_hash();
-
         Ok(verifying_key.verify(&hash, &signature).is_ok())
     }
 
@@ -84,8 +73,7 @@ impl VCLPacket {
     }
 
     pub fn deserialize(data: &[u8]) -> Result<Self, VCLError> {
-        bincode::deserialize(data)
-            .map_err(|e| VCLError::SerializationError(e.to_string()))
+        bincode::deserialize(data).map_err(|e| VCLError::SerializationError(e.to_string()))
     }
 }
 
@@ -148,7 +136,3 @@ mod tests {
         assert_eq!(original.nonce, restored.nonce);
     }
 }
-
-
-
-
