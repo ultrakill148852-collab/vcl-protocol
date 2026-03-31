@@ -9,10 +9,12 @@ pub enum HandshakeMessage {
     Ack,
 }
 
+#[allow(dead_code)]
 pub struct HandshakeState {
     shared_secret: Option<[u8; 32]>,
 }
 
+#[allow(dead_code)]
 impl HandshakeState {
     pub fn new() -> Self {
         HandshakeState { shared_secret: None }
