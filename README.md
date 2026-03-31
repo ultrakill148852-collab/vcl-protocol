@@ -1,17 +1,17 @@
 # VCL Protocol
 
- ⚠️ **Development Branch**
-> 
+⚠️ **Development Branch**
+>
 > You're viewing the `main` branch which is under active development.
 > Code here may be unstable or incomplete.
-> 
+>
 > ✅ **For stable version:** [crates.io/vcl-protocol](https://crates.io/crates/vcl-protocol)
 
 [![Crates.io](https://img.shields.io/crates/v/vcl-protocol.svg)](https://crates.io/crates/vcl-protocol)
 [![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://www.rust-lang.org)
-[![Tests](https://img.shields.io/badge/tests-17/17%20passing-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-passing-brightgreen.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-v0.1.0%20Stable-green.svg)]()
+[![Status](https://img.shields.io/badge/Status-v0.2.0%20Stable-green.svg)]()
 
 **Verified Commit Link** — Cryptographically chained packet transport protocol
 
@@ -27,7 +27,7 @@
 
 VCL Protocol is a transport protocol where each packet cryptographically links to the previous one, creating an immutable chain of data transmission. Inspired by blockchain principles, optimized for real-time networking.
 
-**v0.1.0 — Production Ready** with X25519 Handshake, XChaCha20-Poly1305 Encryption, Replay Protection, and Session Management!
+**v0.2.0** adds Connection Events, Ping/Heartbeat with latency measurement, and mid-session Key Rotation — on top of the production-ready v0.1.0 foundation.
 
 **Published on crates.io:** https://crates.io/crates/vcl-protocol
 
@@ -46,12 +46,15 @@ VCL Protocol is a transport protocol where each packet cryptographically links t
 | ⏱️ Inactivity Timeout | Auto-close idle connections (configurable) |
 | ✅ Chain Validation | Automatic integrity checking on every packet |
 | ⚡ UDP Transport | Low latency, high performance |
-| 🧪 Full Test Suite | 17 passing tests (unit + integration) |
+| 🚫 Custom Error Types | Typed `VCLError` enum with full `std::error::Error` impl |
+| 📡 Connection Events | Subscribe to lifecycle & data events via async mpsc channel |
+| 🏓 Ping / Heartbeat | Built-in ping/pong with automatic round-trip latency measurement |
+| 🔄 Key Rotation | Rotate encryption keys mid-session without reconnecting |
+| 🧪 Full Test Suite | All tests passing (unit + integration) |
 
 ---
 
 ## 🏗️ Architecture
-
 ```
 Packet N        Packet N+1      Packet N+2
 +--------+     +--------+     +--------+
@@ -65,7 +68,6 @@ hash(Packet N+1) -> stored in prev_hash of Packet N+2
 ```
 
 ### Handshake Flow
-
 ```
 Client                          Server
    |                               |
@@ -78,19 +80,43 @@ Client                          Server
 ```
 
 ### Encryption Flow
-
 ```
 Send: plaintext → encrypt(XChaCha20) → sign(Ed25519) → send
 Recv: receive → verify(Ed25519) → decrypt(XChaCha20) → plaintext
 ```
 
 ### Session Management
-
 ```
-- close()        → Gracefully close connection, clear state
-- is_closed()    → Check if connection is closed
-- set_timeout()  → Configure inactivity timeout (default: 60s)
-- last_activity()→ Get timestamp of last send/recv
+- close()         → Gracefully close connection, clear state
+- is_closed()     → Check if connection is closed
+- set_timeout()   → Configure inactivity timeout (default: 60s)
+- last_activity() → Get timestamp of last send/recv
+```
+
+### Event Flow (v0.2.0)
+```
+conn.subscribe() → mpsc::Receiver<VCLEvent>
+
+Events:
+  Connected          → handshake completed
+  Disconnected       → close() called
+  PacketReceived     → data packet arrived { sequence, size }
+  PingReceived       → peer pinged us (pong sent automatically)
+  PongReceived       → our ping was answered { latency: Duration }
+  KeyRotated         → key rotation completed
+  Error(msg)         → non-fatal internal error
+```
+
+### Key Rotation Flow (v0.2.0)
+```
+Client                              Server
+   |                                   |
+   | -- KeyRotation(new_pubkey) -----> |  (encrypted with old key)
+   |                                   |  [server computes new secret]
+   | <--- KeyRotation(new_pubkey) ---- |  (encrypted with old key)
+   |                                   |
+   | [client computes new secret]      | [server already switched]
+   | [both sides now use new key]      |
 ```
 
 ---
@@ -98,7 +124,6 @@ Recv: receive → verify(Ed25519) → decrypt(XChaCha20) → plaintext
 ## 🚀 Quick Start
 
 ### Installation
-
 ```bash
 # Install Rust (if not already installed)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -112,47 +137,60 @@ cd vcl-protocol
 ```
 
 ### Run Demo
-
 ```bash
 cargo run
 ```
 
 ### Run Tests
-
 ```bash
 cargo test
 ```
 
-### Expected Output (Tests)
+### Event Subscription Example
+```rust
+use vcl_protocol::connection::VCLConnection;
+use vcl_protocol::VCLEvent;
 
-```
-running 10 tests
-test crypto::tests::test_hash_data ... ok
-...
-test result: ok. 10 passed; 0 failed
+#[tokio::main]
+async fn main() {
+    let mut conn = VCLConnection::bind("127.0.0.1:0").await.unwrap();
 
-running 7 tests
-test test_client_server_basic ... ok
-test test_close ... ok
-test test_timeout_getters ... ok
-...
-test result: ok. 7 passed; 0 failed
+    // Subscribe BEFORE connect to catch Connected event
+    let mut events = conn.subscribe();
+
+    tokio::spawn(async move {
+        while let Some(event) = events.recv().await {
+            match event {
+                VCLEvent::Connected              => println!("Connected!"),
+                VCLEvent::PongReceived { latency } => println!("Latency: {:?}", latency),
+                VCLEvent::KeyRotated             => println!("Keys rotated!"),
+                VCLEvent::Disconnected           => break,
+                _                                => {}
+            }
+        }
+    });
+
+    conn.connect("127.0.0.1:8080").await.unwrap();
+}
 ```
 
 ---
 
 ## 📦 Packet Structure
-
 ```rust
 pub struct VCLPacket {
-    pub version: u8,           // Protocol version
+    pub version: u8,           // Protocol version (2 in v0.2.0)
+    pub packet_type: PacketType, // Data | Ping | Pong | KeyRotation
     pub sequence: u64,         // Monotonic packet sequence number
-    pub prev_hash: Vec<u8>,    // SHA-256 hash of previous packet
+    pub prev_hash: Vec<u8>,    // SHA-256 hash of previous packet (same direction)
     pub nonce: [u8; 24],       // XChaCha20 nonce for encryption
     pub payload: Vec<u8>,      // Encrypted data payload
     pub signature: Vec<u8>,    // Ed25519 signature
 }
 ```
+
+> **v0.2.0 note:** Send and receive chains are now tracked independently,
+> enabling correct bidirectional communication and transparent control packets.
 
 ---
 
@@ -205,7 +243,6 @@ Additional layer of packet integrity and replay protection for VPN protocols.
 ---
 
 ## 🛠️ Development
-
 ```bash
 # Run all tests
 cargo test
@@ -215,6 +252,10 @@ cargo test --lib
 
 # Run integration tests only
 cargo test --test integration_test
+
+# Run examples
+cargo run --example server
+cargo run --example client
 
 # Format code
 cargo fmt
@@ -228,21 +269,6 @@ cargo build --release
 # Generate docs
 cargo doc --open
 ```
-
-### Test Coverage (17/17 passing)
-
-**Unit Tests (10):**
-- crypto: key generation, encryption/decryption, hashing
-- packet: creation, signing, verification, serialization, chain validation
-
-**Integration Tests (7):**
-- client-server basic communication
-- encryption integrity
-- chain validation
-- replay protection
-- close() functionality
-- send after close
-- timeout getters
 
 ---
 
