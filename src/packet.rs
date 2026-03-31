@@ -3,9 +3,20 @@ use ed25519_dalek::{SigningKey, VerifyingKey, Signature, Signer, Verifier};
 use serde::{Serialize, Deserialize};
 use crate::error::VCLError;
 
+/// Type of a VCL packet.
+/// Determines how the connection layer routes the packet after decryption.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub enum PacketType {
+    Data,
+    Ping,
+    Pong,
+    KeyRotation,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct VCLPacket {
     pub version: u8,
+    pub packet_type: PacketType,
     pub sequence: u64,
     pub prev_hash: Vec<u8>,
     pub nonce: [u8; 24],
@@ -14,9 +25,22 @@ pub struct VCLPacket {
 }
 
 impl VCLPacket {
+    /// Create a Data packet (default, used by send())
     pub fn new(sequence: u64, prev_hash: Vec<u8>, payload: Vec<u8>, nonce: [u8; 24]) -> Self {
+        Self::new_typed(sequence, prev_hash, payload, nonce, PacketType::Data)
+    }
+
+    /// Create a packet of a specific type (used internally)
+    pub fn new_typed(
+        sequence: u64,
+        prev_hash: Vec<u8>,
+        payload: Vec<u8>,
+        nonce: [u8; 24],
+        packet_type: PacketType,
+    ) -> Self {
         VCLPacket {
-            version: 1,
+            version: 2,
+            packet_type,
             sequence,
             prev_hash,
             nonce,
@@ -89,9 +113,10 @@ mod tests {
     #[test]
     fn test_packet_new() {
         let packet = VCLPacket::new(1, vec![0; 32], b"test".to_vec(), [0; 24]);
-        assert_eq!(packet.version, 1);
+        assert_eq!(packet.version, 2);
         assert_eq!(packet.sequence, 1);
         assert_eq!(packet.payload, b"test");
+        assert_eq!(packet.packet_type, PacketType::Data);
     }
 
     #[test]
@@ -134,5 +159,16 @@ mod tests {
         assert_eq!(original.sequence, restored.sequence);
         assert_eq!(original.payload, restored.payload);
         assert_eq!(original.nonce, restored.nonce);
+        assert_eq!(restored.packet_type, PacketType::Data);
+    }
+
+    #[test]
+    fn test_packet_types() {
+        let ping = VCLPacket::new_typed(0, vec![0; 32], vec![], [0; 24], PacketType::Ping);
+        let pong = VCLPacket::new_typed(0, vec![0; 32], vec![], [0; 24], PacketType::Pong);
+        let rot  = VCLPacket::new_typed(0, vec![0; 32], vec![], [0; 24], PacketType::KeyRotation);
+        assert_eq!(ping.packet_type, PacketType::Ping);
+        assert_eq!(pong.packet_type, PacketType::Pong);
+        assert_eq!(rot.packet_type,  PacketType::KeyRotation);
     }
 }
