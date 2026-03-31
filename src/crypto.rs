@@ -27,7 +27,8 @@ impl KeyPair {
 
 pub fn encrypt_payload(data: &[u8], key: &[u8; 32]) -> Result<(Vec<u8>, [u8; 24]), VCLError> {
     let cipher = XChaCha20Poly1305::new_from_slice(key)
-        .map_err(|e| VCLError::InvalidKey(e.to_string()))?;
+        .map_err(|e| VCLError::InvalidKey(format!("Invalid key length: {}", e)))?;
+
     let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
     let mut nonce_bytes = [0u8; 24];
     nonce_bytes.copy_from_slice(nonce.as_slice());
@@ -41,7 +42,8 @@ pub fn encrypt_payload(data: &[u8], key: &[u8; 32]) -> Result<(Vec<u8>, [u8; 24]
 
 pub fn decrypt_payload(ciphertext: &[u8], key: &[u8; 32], nonce: &[u8; 24]) -> Result<Vec<u8>, VCLError> {
     let cipher = XChaCha20Poly1305::new_from_slice(key)
-        .map_err(|e| VCLError::InvalidKey(e.to_string()))?;
+        .map_err(|e| VCLError::InvalidKey(format!("Invalid key length: {}", e)))?;
+
     let nonce = XNonce::from_slice(nonce);
 
     cipher
@@ -49,6 +51,7 @@ pub fn decrypt_payload(ciphertext: &[u8], key: &[u8; 32], nonce: &[u8; 24]) -> R
         .map_err(|e| VCLError::CryptoError(format!("Decryption failed: {}", e)))
 }
 
+#[allow(dead_code)]
 pub fn hash_data(data: &[u8]) -> Vec<u8> {
     use sha2::{Sha256, Digest};
     Sha256::new().chain_update(data).finalize().to_vec()
