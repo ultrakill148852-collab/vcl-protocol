@@ -1,11 +1,13 @@
-use crate::packet::VCLPacket;
+use crate::packet::{VCLPacket, PacketType};
 use crate::crypto::{KeyPair, encrypt_payload, decrypt_payload};
 use crate::handshake::{HandshakeMessage, create_client_hello, process_client_hello, process_server_hello};
 use crate::error::VCLError;
+use crate::event::VCLEvent;
 use ed25519_dalek::SigningKey;
-use x25519_dalek::EphemeralSecret;
+use x25519_dalek::{EphemeralSecret, PublicKey};
 use rand::rngs::OsRng;
 use tokio::net::UdpSocket;
+use tokio::sync::mpsc;
 use std::net::SocketAddr;
 use std::collections::HashSet;
 use std::time::Instant;
@@ -13,17 +15,27 @@ use std::time::Instant;
 pub struct VCLConnection {
     socket: UdpSocket,
     keypair: KeyPair,
-    sequence: u64,
-    last_hash: Vec<u8>,
+    // Outgoing chain
+    send_sequence: u64,
+    send_hash: Vec<u8>,
+    // Incoming chain
+    recv_hash: Vec<u8>,
+    last_sequence: u64,
+    seen_nonces: HashSet<[u8; 24]>,
+    // Peer info
     peer_addr: Option<SocketAddr>,
     peer_public_key: Option<Vec<u8>>,
     shared_secret: Option<[u8; 32]>,
+    #[allow(dead_code)]
     is_server: bool,
-    last_sequence: u64,
-    seen_nonces: HashSet<[u8; 24]>,
+    // Session
     closed: bool,
     last_activity: Instant,
     timeout_secs: u64,
+    // Events
+    event_tx: Option<mpsc::Sender<VCLEvent>>,
+    // Ping
+    ping_sent_at: Option<Instant>,
 }
 
 impl VCLConnection {
@@ -32,19 +44,50 @@ impl VCLConnection {
         Ok(VCLConnection {
             socket,
             keypair: KeyPair::generate(),
-            sequence: 0,
-            last_hash: vec![0; 32],
+            send_sequence: 0,
+            send_hash: vec![0; 32],
+            recv_hash: vec![0; 32],
+            last_sequence: 0,
+            seen_nonces: HashSet::new(),
             peer_addr: None,
             peer_public_key: None,
             shared_secret: None,
             is_server: false,
-            last_sequence: 0,
-            seen_nonces: HashSet::new(),
             closed: false,
             last_activity: Instant::now(),
             timeout_secs: 60,
+            event_tx: None,
+            ping_sent_at: None,
         })
     }
+
+    // ─── Events ──────────────────────────────────────────────────────────────
+
+    /// Subscribe to connection events. Returns an async receiver channel.
+    /// Call before connect() / accept_handshake() to catch Connected event.
+    ///
+    /// # Example
+    /// ```no_run
+    /// let mut events = conn.subscribe();
+    /// tokio::spawn(async move {
+    ///     while let Some(event) = events.recv().await {
+    ///         println!("Event: {:?}", event);
+    ///     }
+    /// });
+    /// ```
+    pub fn subscribe(&mut self) -> mpsc::Receiver<VCLEvent> {
+        let (tx, rx) = mpsc::channel(64);
+        self.event_tx = Some(tx);
+        rx
+    }
+
+    fn emit(&self, event: VCLEvent) {
+        if let Some(tx) = &self.event_tx {
+            let _ = tx.try_send(event);
+        }
+    }
+
+    // ─── Configuration ────────────────────────────────────────────────────────
 
     pub fn set_timeout(&mut self, secs: u64) {
         self.timeout_secs = secs;
@@ -65,6 +108,8 @@ impl VCLConnection {
         self.keypair.private_key = private_key.to_vec();
         self.keypair.public_key = verifying_key.to_bytes().to_vec();
     }
+
+    // ─── Handshake ────────────────────────────────────────────────────────────
 
     pub async fn connect(&mut self, addr: &str) -> Result<(), VCLError> {
         let parsed: SocketAddr = addr.parse()?;
@@ -88,6 +133,7 @@ impl VCLConnection {
         }
 
         self.last_activity = Instant::now();
+        self.emit(VCLEvent::Connected);
         Ok(())
     }
 
@@ -114,81 +160,243 @@ impl VCLConnection {
         }
 
         self.last_activity = Instant::now();
+        self.emit(VCLEvent::Connected);
         Ok(())
     }
 
-    pub async fn send(&mut self, data: &[u8]) -> Result<(), VCLError> {
-        if self.closed {
-            return Err(VCLError::ConnectionClosed);
-        }
-        self.check_timeout()?;
+    // ─── Internal send (all packet types go through here) ────────────────────
 
+    async fn send_internal(&mut self, data: &[u8], packet_type: PacketType) -> Result<(), VCLError> {
         let key = self.shared_secret.ok_or(VCLError::NoSharedSecret)?;
         let (encrypted_payload, nonce) = encrypt_payload(data, &key)?;
 
-        let mut packet = VCLPacket::new(self.sequence, self.last_hash.clone(), encrypted_payload, nonce);
+        let mut packet = VCLPacket::new_typed(
+            self.send_sequence,
+            self.send_hash.clone(),
+            encrypted_payload,
+            nonce,
+            packet_type,
+        );
         packet.sign(&self.keypair.private_key)?;
 
         let serialized = packet.serialize();
         let addr = self.peer_addr.ok_or(VCLError::NoPeerAddress)?;
         self.socket.send_to(&serialized, addr).await?;
 
-        self.last_hash = packet.compute_hash();
-        self.sequence += 1;
+        self.send_hash = packet.compute_hash();
+        self.send_sequence += 1;
         self.last_activity = Instant::now();
         Ok(())
     }
 
-    pub async fn recv(&mut self) -> Result<VCLPacket, VCLError> {
-        if self.closed {
-            return Err(VCLError::ConnectionClosed);
+    // ─── Public send ──────────────────────────────────────────────────────────
+
+    pub async fn send(&mut self, data: &[u8]) -> Result<(), VCLError> {
+        if self.closed { return Err(VCLError::ConnectionClosed); }
+        self.check_timeout()?;
+        self.send_internal(data, PacketType::Data).await
+    }
+
+    // ─── Ping / Heartbeat ─────────────────────────────────────────────────────
+
+    /// Send a ping to the peer. The pong reply is handled automatically inside
+    /// recv() — subscribe to events to receive PongReceived { latency }.
+    ///
+    /// ⚠️  You must keep calling recv() for the pong to be processed.
+    pub async fn ping(&mut self) -> Result<(), VCLError> {
+        if self.closed { return Err(VCLError::ConnectionClosed); }
+        self.check_timeout()?;
+        self.ping_sent_at = Some(Instant::now());
+        self.send_internal(&[], PacketType::Ping).await
+    }
+
+    async fn handle_ping(&mut self) -> Result<(), VCLError> {
+        // Reply automatically
+        self.send_internal(&[], PacketType::Pong).await?;
+        self.emit(VCLEvent::PingReceived);
+        Ok(())
+    }
+
+    fn handle_pong(&mut self) {
+        if let Some(sent_at) = self.ping_sent_at.take() {
+            self.emit(VCLEvent::PongReceived { latency: sent_at.elapsed() });
         }
+    }
+
+    // ─── Key Rotation ──────────────────────────────────────────────────────────
+
+    /// Initiate a key rotation. Generates a new X25519 ephemeral key pair,
+    /// sends the public key to the peer, and waits for the peer's response.
+    /// Both sides atomically switch to the new shared secret.
+    ///
+    /// ⚠️  Do not call send() while rotate_keys() is awaiting a response.
+    /// ⚠️  The peer must be in an active recv() loop to handle the rotation.
+    pub async fn rotate_keys(&mut self) -> Result<(), VCLError> {
+        if self.closed { return Err(VCLError::ConnectionClosed); }
         self.check_timeout()?;
 
-        let mut buf = vec![0u8; 65535];
-        let (len, addr) = self.socket.recv_from(&mut buf).await?;
-        if self.peer_addr.is_none() {
-            self.peer_addr = Some(addr);
-        }
+        // Generate our new ephemeral key pair
+        let our_ephemeral = EphemeralSecret::random_from_rng(OsRng);
+        let our_public = PublicKey::from(&our_ephemeral);
 
+        // Send our new public key (encrypted with the current/old shared secret)
+        self.send_internal(&our_public.to_bytes(), PacketType::KeyRotation).await?;
+
+        // Wait for the peer's new public key — full validation
+        let mut buf = vec![0u8; 65535];
+        let (len, _) = self.socket.recv_from(&mut buf).await?;
         let packet = VCLPacket::deserialize(&buf[..len])?;
 
-        if self.last_sequence > 0 && packet.sequence <= self.last_sequence {
-            return Err(VCLError::ReplayDetected("Old sequence number".to_string()));
-        }
+        // Replay protection
         if self.seen_nonces.contains(&packet.nonce) {
-            return Err(VCLError::ReplayDetected("Duplicate nonce".to_string()));
+            return Err(VCLError::ReplayDetected("Duplicate nonce in key rotation".to_string()));
         }
         self.seen_nonces.insert(packet.nonce);
-        if self.seen_nonces.len() > 1000 {
-            self.seen_nonces.clear();
-        }
 
-        if !packet.validate_chain(&self.last_hash) {
+        // Chain validation (incoming)
+        if !packet.validate_chain(&self.recv_hash) {
             return Err(VCLError::ChainValidationFailed);
         }
 
+        // Signature
         let verify_key = self.peer_public_key.as_ref().unwrap_or(&self.keypair.public_key);
         if !packet.verify(verify_key)? {
             return Err(VCLError::SignatureInvalid);
         }
 
-        self.last_hash = packet.compute_hash();
+        self.recv_hash = packet.compute_hash();
         self.last_sequence = packet.sequence;
         self.last_activity = Instant::now();
 
-        let key = self.shared_secret.ok_or(VCLError::NoSharedSecret)?;
-        let decrypted = decrypt_payload(&packet.payload, &key, &packet.nonce)?;
+        // Decrypt with OLD key
+        let old_key = self.shared_secret.ok_or(VCLError::NoSharedSecret)?;
+        let decrypted = decrypt_payload(&packet.payload, &old_key, &packet.nonce)?;
 
-        Ok(VCLPacket {
-            version: packet.version,
-            sequence: packet.sequence,
-            prev_hash: packet.prev_hash,
-            nonce: packet.nonce,
-            payload: decrypted,
-            signature: packet.signature,
-        })
+        if packet.packet_type != PacketType::KeyRotation {
+            return Err(VCLError::HandshakeFailed("Expected KeyRotation response".to_string()));
+        }
+        if decrypted.len() != 32 {
+            return Err(VCLError::InvalidPacket("KeyRotation payload must be 32 bytes".to_string()));
+        }
+
+        // Compute new shared secret
+        let their_bytes: [u8; 32] = decrypted
+            .try_into()
+            .map_err(|_| VCLError::InvalidPacket("Invalid peer pubkey".to_string()))?;
+        let their_pubkey = PublicKey::from(their_bytes);
+        let new_secret = our_ephemeral.diffie_hellman(&their_pubkey);
+        self.shared_secret = Some(new_secret.to_bytes());
+        self.emit(VCLEvent::KeyRotated);
+        Ok(())
     }
+
+    // Called from recv() when the peer initiates a key rotation
+    async fn handle_key_rotation_request(&mut self, their_pubkey_bytes: &[u8]) -> Result<(), VCLError> {
+        if their_pubkey_bytes.len() != 32 {
+            return Err(VCLError::InvalidPacket("KeyRotation payload must be 32 bytes".to_string()));
+        }
+
+        let their_bytes: [u8; 32] = their_pubkey_bytes
+            .try_into()
+            .map_err(|_| VCLError::InvalidPacket("Invalid peer pubkey".to_string()))?;
+        let their_pubkey = PublicKey::from(their_bytes);
+
+        // Generate our new ephemeral
+        let our_ephemeral = EphemeralSecret::random_from_rng(OsRng);
+        let our_public = PublicKey::from(&our_ephemeral);
+        let new_secret = our_ephemeral.diffie_hellman(&their_pubkey);
+
+        // Respond with our new pubkey — still encrypted with OLD key
+        self.send_internal(&our_public.to_bytes(), PacketType::KeyRotation).await?;
+
+        // Switch to new key
+        self.shared_secret = Some(new_secret.to_bytes());
+        self.emit(VCLEvent::KeyRotated);
+        Ok(())
+    }
+
+    // ─── Receive ──────────────────────────────────────────────────────────────
+
+    /// Receive the next data packet. Control packets (Ping, Pong, KeyRotation)
+    /// are handled transparently — this call loops until a Data packet arrives.
+    pub async fn recv(&mut self) -> Result<VCLPacket, VCLError> {
+        if self.closed { return Err(VCLError::ConnectionClosed); }
+
+        loop {
+            self.check_timeout()?;
+
+            let mut buf = vec![0u8; 65535];
+            let (len, addr) = self.socket.recv_from(&mut buf).await?;
+            if self.peer_addr.is_none() {
+                self.peer_addr = Some(addr);
+            }
+
+            let packet = VCLPacket::deserialize(&buf[..len])?;
+
+            // Replay protection
+            if self.last_sequence > 0 && packet.sequence <= self.last_sequence {
+                return Err(VCLError::ReplayDetected("Old sequence number".to_string()));
+            }
+            if self.seen_nonces.contains(&packet.nonce) {
+                return Err(VCLError::ReplayDetected("Duplicate nonce".to_string()));
+            }
+            self.seen_nonces.insert(packet.nonce);
+            if self.seen_nonces.len() > 1000 {
+                self.seen_nonces.clear();
+            }
+
+            // Incoming chain validation
+            if !packet.validate_chain(&self.recv_hash) {
+                return Err(VCLError::ChainValidationFailed);
+            }
+
+            // Signature
+            let verify_key = self.peer_public_key.as_ref().unwrap_or(&self.keypair.public_key);
+            if !packet.verify(verify_key)? {
+                return Err(VCLError::SignatureInvalid);
+            }
+
+            // Update incoming chain state
+            self.recv_hash = packet.compute_hash();
+            self.last_sequence = packet.sequence;
+            self.last_activity = Instant::now();
+
+            // Decrypt
+            let key = self.shared_secret.ok_or(VCLError::NoSharedSecret)?;
+            let decrypted = decrypt_payload(&packet.payload, &key, &packet.nonce)?;
+
+            // Route
+            match packet.packet_type {
+                PacketType::Data => {
+                    self.emit(VCLEvent::PacketReceived {
+                        sequence: packet.sequence,
+                        size: decrypted.len(),
+                    });
+                    return Ok(VCLPacket {
+                        version: packet.version,
+                        packet_type: PacketType::Data,
+                        sequence: packet.sequence,
+                        prev_hash: packet.prev_hash,
+                        nonce: packet.nonce,
+                        payload: decrypted,
+                        signature: packet.signature,
+                    });
+                }
+                PacketType::Ping => {
+                    self.handle_ping().await?;
+                }
+                PacketType::Pong => {
+                    self.handle_pong();
+                }
+                PacketType::KeyRotation => {
+                    self.handle_key_rotation_request(&decrypted).await?;
+                }
+            }
+            // loop back and wait for the next packet
+        }
+    }
+
+    // ─── Session management ───────────────────────────────────────────────────
 
     fn check_timeout(&self) -> Result<(), VCLError> {
         if self.last_activity.elapsed().as_secs() > self.timeout_secs {
@@ -202,11 +410,14 @@ impl VCLConnection {
             return Err(VCLError::ConnectionClosed);
         }
         self.closed = true;
-        self.sequence = 0;
-        self.last_hash = vec![0; 32];
+        self.send_sequence = 0;
+        self.send_hash = vec![0; 32];
+        self.recv_hash = vec![0; 32];
         self.last_sequence = 0;
         self.seen_nonces.clear();
         self.shared_secret = None;
+        self.ping_sent_at = None;
+        self.emit(VCLEvent::Disconnected);
         Ok(())
     }
 
