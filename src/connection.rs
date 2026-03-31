@@ -80,10 +80,9 @@ impl VCLConnection {
 
         match server_hello {
             HandshakeMessage::ServerHello { public_key } => {
-                let shared = process_server_hello(ephemeral, public_key);
-                self.shared_secret = Some(
-                    shared.ok_or_else(|| VCLError::HandshakeFailed("Key exchange failed".to_string()))?
-                );
+                let shared = process_server_hello(ephemeral, public_key)
+                    .ok_or_else(|| VCLError::HandshakeFailed("Key exchange failed".to_string()))?;
+                self.shared_secret = Some(shared);
             }
             _ => return Err(VCLError::ExpectedServerHello),
         }
@@ -106,7 +105,6 @@ impl VCLConnection {
                 let (server_hello, shared) = process_client_hello(ephemeral, public_key);
                 let hello_bytes = bincode::serialize(&server_hello)?;
                 self.socket.send_to(&hello_bytes, addr).await?;
-
                 self.shared_secret = Some(
                     shared.ok_or_else(|| VCLError::HandshakeFailed("Key exchange failed".to_string()))?
                 );
