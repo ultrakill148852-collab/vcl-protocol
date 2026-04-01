@@ -15,26 +15,20 @@ use std::time::Instant;
 pub struct VCLConnection {
     socket: UdpSocket,
     keypair: KeyPair,
-    // Outgoing chain
     send_sequence: u64,
     send_hash: Vec<u8>,
-    // Incoming chain
     recv_hash: Vec<u8>,
     last_sequence: u64,
     seen_nonces: HashSet<[u8; 24]>,
-    // Peer info
     peer_addr: Option<SocketAddr>,
     peer_public_key: Option<Vec<u8>>,
     shared_secret: Option<[u8; 32]>,
     #[allow(dead_code)]
     is_server: bool,
-    // Session
     closed: bool,
     last_activity: Instant,
     timeout_secs: u64,
-    // Events
     event_tx: Option<mpsc::Sender<VCLEvent>>,
-    // Ping
     ping_sent_at: Option<Instant>,
 }
 
@@ -65,16 +59,6 @@ impl VCLConnection {
 
     /// Subscribe to connection events. Returns an async receiver channel.
     /// Call before connect() / accept_handshake() to catch Connected event.
-    ///
-    /// # Example
-    /// ```no_run
-    /// let mut events = conn.subscribe();
-    /// tokio::spawn(async move {
-    ///     while let Some(event) = events.recv().await {
-    ///         println!("Event: {:?}", event);
-    ///     }
-    /// });
-    /// ```
     pub fn subscribe(&mut self) -> mpsc::Receiver<VCLEvent> {
         let (tx, rx) = mpsc::channel(64);
         self.event_tx = Some(tx);
@@ -164,7 +148,7 @@ impl VCLConnection {
         Ok(())
     }
 
-    // ─── Internal send (all packet types go through here) ────────────────────
+    // ─── Internal send ────────────────────────────────────────────────────────
 
     async fn send_internal(&mut self, data: &[u8], packet_type: PacketType) -> Result<(), VCLError> {
         let key = self.shared_secret.ok_or(VCLError::NoSharedSecret)?;
@@ -201,8 +185,7 @@ impl VCLConnection {
 
     /// Send a ping to the peer. The pong reply is handled automatically inside
     /// recv() — subscribe to events to receive PongReceived { latency }.
-    ///
-    /// ⚠️  You must keep calling recv() for the pong to be processed.
+    /// You must keep calling recv() for the pong to be processed.
     pub async fn ping(&mut self) -> Result<(), VCLError> {
         if self.closed { return Err(VCLError::ConnectionClosed); }
         self.check_timeout()?;
@@ -211,7 +194,6 @@ impl VCLConnection {
     }
 
     async fn handle_ping(&mut self) -> Result<(), VCLError> {
-        // Reply automatically
         self.send_internal(&[], PacketType::Pong).await?;
         self.emit(VCLEvent::PingReceived);
         Ok(())
@@ -228,37 +210,29 @@ impl VCLConnection {
     /// Initiate a key rotation. Generates a new X25519 ephemeral key pair,
     /// sends the public key to the peer, and waits for the peer's response.
     /// Both sides atomically switch to the new shared secret.
-    ///
-    /// ⚠️  Do not call send() while rotate_keys() is awaiting a response.
-    /// ⚠️  The peer must be in an active recv() loop to handle the rotation.
+    /// The peer must be in an active recv() loop to handle the rotation.
     pub async fn rotate_keys(&mut self) -> Result<(), VCLError> {
         if self.closed { return Err(VCLError::ConnectionClosed); }
         self.check_timeout()?;
 
-        // Generate our new ephemeral key pair
         let our_ephemeral = EphemeralSecret::random_from_rng(OsRng);
         let our_public = PublicKey::from(&our_ephemeral);
 
-        // Send our new public key (encrypted with the current/old shared secret)
         self.send_internal(&our_public.to_bytes(), PacketType::KeyRotation).await?;
 
-        // Wait for the peer's new public key — full validation
         let mut buf = vec![0u8; 65535];
         let (len, _) = self.socket.recv_from(&mut buf).await?;
         let packet = VCLPacket::deserialize(&buf[..len])?;
 
-        // Replay protection
         if self.seen_nonces.contains(&packet.nonce) {
             return Err(VCLError::ReplayDetected("Duplicate nonce in key rotation".to_string()));
         }
         self.seen_nonces.insert(packet.nonce);
 
-        // Chain validation (incoming)
         if !packet.validate_chain(&self.recv_hash) {
             return Err(VCLError::ChainValidationFailed);
         }
 
-        // Signature
         let verify_key = self.peer_public_key.as_ref().unwrap_or(&self.keypair.public_key);
         if !packet.verify(verify_key)? {
             return Err(VCLError::SignatureInvalid);
@@ -268,7 +242,6 @@ impl VCLConnection {
         self.last_sequence = packet.sequence;
         self.last_activity = Instant::now();
 
-        // Decrypt with OLD key
         let old_key = self.shared_secret.ok_or(VCLError::NoSharedSecret)?;
         let decrypted = decrypt_payload(&packet.payload, &old_key, &packet.nonce)?;
 
@@ -279,7 +252,6 @@ impl VCLConnection {
             return Err(VCLError::InvalidPacket("KeyRotation payload must be 32 bytes".to_string()));
         }
 
-        // Compute new shared secret
         let their_bytes: [u8; 32] = decrypted
             .try_into()
             .map_err(|_| VCLError::InvalidPacket("Invalid peer pubkey".to_string()))?;
@@ -290,7 +262,6 @@ impl VCLConnection {
         Ok(())
     }
 
-    // Called from recv() when the peer initiates a key rotation
     async fn handle_key_rotation_request(&mut self, their_pubkey_bytes: &[u8]) -> Result<(), VCLError> {
         if their_pubkey_bytes.len() != 32 {
             return Err(VCLError::InvalidPacket("KeyRotation payload must be 32 bytes".to_string()));
@@ -301,15 +272,12 @@ impl VCLConnection {
             .map_err(|_| VCLError::InvalidPacket("Invalid peer pubkey".to_string()))?;
         let their_pubkey = PublicKey::from(their_bytes);
 
-        // Generate our new ephemeral
         let our_ephemeral = EphemeralSecret::random_from_rng(OsRng);
         let our_public = PublicKey::from(&our_ephemeral);
         let new_secret = our_ephemeral.diffie_hellman(&their_pubkey);
 
-        // Respond with our new pubkey — still encrypted with OLD key
         self.send_internal(&our_public.to_bytes(), PacketType::KeyRotation).await?;
 
-        // Switch to new key
         self.shared_secret = Some(new_secret.to_bytes());
         self.emit(VCLEvent::KeyRotated);
         Ok(())
@@ -317,8 +285,6 @@ impl VCLConnection {
 
     // ─── Receive ──────────────────────────────────────────────────────────────
 
-    /// Receive the next data packet. Control packets (Ping, Pong, KeyRotation)
-    /// are handled transparently — this call loops until a Data packet arrives.
     pub async fn recv(&mut self) -> Result<VCLPacket, VCLError> {
         if self.closed { return Err(VCLError::ConnectionClosed); }
 
@@ -333,7 +299,6 @@ impl VCLConnection {
 
             let packet = VCLPacket::deserialize(&buf[..len])?;
 
-            // Replay protection
             if self.last_sequence > 0 && packet.sequence <= self.last_sequence {
                 return Err(VCLError::ReplayDetected("Old sequence number".to_string()));
             }
@@ -345,27 +310,22 @@ impl VCLConnection {
                 self.seen_nonces.clear();
             }
 
-            // Incoming chain validation
             if !packet.validate_chain(&self.recv_hash) {
                 return Err(VCLError::ChainValidationFailed);
             }
 
-            // Signature
             let verify_key = self.peer_public_key.as_ref().unwrap_or(&self.keypair.public_key);
             if !packet.verify(verify_key)? {
                 return Err(VCLError::SignatureInvalid);
             }
 
-            // Update incoming chain state
             self.recv_hash = packet.compute_hash();
             self.last_sequence = packet.sequence;
             self.last_activity = Instant::now();
 
-            // Decrypt
             let key = self.shared_secret.ok_or(VCLError::NoSharedSecret)?;
             let decrypted = decrypt_payload(&packet.payload, &key, &packet.nonce)?;
 
-            // Route
             match packet.packet_type {
                 PacketType::Data => {
                     self.emit(VCLEvent::PacketReceived {
@@ -392,7 +352,6 @@ impl VCLConnection {
                     self.handle_key_rotation_request(&decrypted).await?;
                 }
             }
-            // loop back and wait for the next packet
         }
     }
 
