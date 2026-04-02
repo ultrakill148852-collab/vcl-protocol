@@ -60,120 +60,171 @@ VCL Protocol is a transport protocol where each packet cryptographically links t
 
 ---
 
-## 🏗️ ArchitecturePacket N        Packet N+1      Packet N+2
+## 🏗️ Architecture
+```
+Packet N        Packet N+1      Packet N+2
 +--------+     +--------+     +--------+
 | hash   |     | prev   |     | prev   |
 | 0x00.. | --> | 0x00.. | --> | 0x3a.. |
 | sig    |     | sig    |     | sig    |
-+--------+     +--------+     +--------+hash(Packet N) -> stored in prev_hash of Packet N+1
++--------+     +--------+     +--------+
+
+hash(Packet N) -> stored in prev_hash of Packet N+1
 hash(Packet N+1) -> stored in prev_hash of Packet N+2
+```
 
-### Handshake FlowClient                          Server
-|                               |
-| -- ClientHello (pubkey) ----> |
-|                               |
-| <---- ServerHello (pubkey) -- |
-|                               |
-| [Shared secret computed]      |
-| [Secure channel established]  |
+### Handshake Flow
+```
+Client                          Server
+   |                               |
+   | -- ClientHello (pubkey) ----> |
+   |                               |
+   | <---- ServerHello (pubkey) -- |
+   |                               |
+   | [Shared secret computed]      |
+   | [Secure channel established]  |
+```
 
-### Encryption FlowSend: plaintext → encrypt(XChaCha20) → sign(Ed25519) → send
+### Encryption Flow
+```
+Send: plaintext → encrypt(XChaCha20) → sign(Ed25519) → send
 Recv: receive → verify(Ed25519) → decrypt(XChaCha20) → plaintext
+```
 
 ### Session Management
-close()         → Gracefully close connection, clear state
-is_closed()     → Check if connection is closed
-set_timeout()   → Configure inactivity timeout (default: 60s)
-last_activity() → Get timestamp of last send/recv
+```
+- close()         → Gracefully close connection, clear state
+- is_closed()     → Check if connection is closed
+- set_timeout()   → Configure inactivity timeout (default: 60s)
+- last_activity() → Get timestamp of last send/recv
+```
 
+### Event Flow
+```
+conn.subscribe() → mpsc::Receiver<VCLEvent>
 
-### Event Flowconn.subscribe() → mpsc::Receiver<VCLEvent>Events:
-Connected          → handshake completed
-Disconnected       → close() called
-PacketReceived     → data packet arrived { sequence, size }
-PingReceived       → peer pinged us (pong sent automatically)
-PongReceived       → our ping was answered { latency: Duration }
-KeyRotated         → key rotation completed
-Error(msg)         → non-fatal internal error
+Events:
+  Connected          → handshake completed
+  Disconnected       → close() called
+  PacketReceived     → data packet arrived { sequence, size }
+  PingReceived       → peer pinged us (pong sent automatically)
+  PongReceived       → our ping was answered { latency: Duration }
+  KeyRotated         → key rotation completed
+  Error(msg)         → non-fatal internal error
+```
 
-### Key Rotation FlowClient                              Server
-|                                   |
-| -- KeyRotation(new_pubkey) -----> |
-|                                   |
-| <--- KeyRotation(new_pubkey) ---- |
-|                                   |
-| [both sides now use new key]      |
+### Key Rotation Flow
+```
+Client                              Server
+   |                                   |
+   | -- KeyRotation(new_pubkey) -----> |
+   |                                   |
+   | <--- KeyRotation(new_pubkey) ---- |
+   |                                   |
+   | [both sides now use new key]      |
+```
 
-### Connection PoolVCLPool::new(max)
-|
-├── bind("addr") → ConnectionId(0)
-├── bind("addr") → ConnectionId(1)
-├── bind("addr") → ConnectionId(2)
-|
-├── connect(id, peer)
-├── send(id, data)
-├── recv(id) → VCLPacket
-├── ping(id)
-├── rotate_keys(id)
-├── close(id)
-└── close_all()
+### Connection Pool
+```
+VCLPool::new(max)
+   |
+   ├── bind("addr") → ConnectionId(0)
+   ├── bind("addr") → ConnectionId(1)
+   ├── bind("addr") → ConnectionId(2)
+   |
+   ├── connect(id, peer)
+   ├── send(id, data)
+   ├── recv(id) → VCLPacket
+   ├── ping(id)
+   ├── rotate_keys(id)
+   ├── close(id)
+   └── close_all()
+```
 
 ---
 
 ## 🚀 Quick Start
 
 ### Installation
-bashcurl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 cargo add vcl-protocol
+```
 
 ### Run Demo
-```bashcargo run
+```bash
+cargo run
+```
 
 ### Run Tests
-```bashcargo test
+```bash
+cargo test
+```
 
 ### Run Benchmarks
-```bashcargo bench
+```bash
+cargo bench
+```
 
 ### Event Subscription Example
-```rustuse vcl_protocol::connection::VCLConnection;
-use vcl_protocol::VCLEvent;#[tokio::main]
+```rust
+use vcl_protocol::connection::VCLConnection;
+use vcl_protocol::VCLEvent;
+
+#[tokio::main]
 async fn main() {
-let mut conn = VCLConnection::bind("127.0.0.1:0").await.unwrap();
-let mut events = conn.subscribe();tokio::spawn(async move {
-    while let Some(event) = events.recv().await {
-        match event {
-            VCLEvent::Connected              => println!("Connected!"),
-            VCLEvent::PongReceived { latency } => println!("Latency: {:?}", latency),
-            VCLEvent::KeyRotated             => println!("Keys rotated!"),
-            VCLEvent::Disconnected           => break,
-            _                                => {}
+    let mut conn = VCLConnection::bind("127.0.0.1:0").await.unwrap();
+    let mut events = conn.subscribe();
+
+    tokio::spawn(async move {
+        while let Some(event) = events.recv().await {
+            match event {
+                VCLEvent::Connected              => println!("Connected!"),
+                VCLEvent::PongReceived { latency } => println!("Latency: {:?}", latency),
+                VCLEvent::KeyRotated             => println!("Keys rotated!"),
+                VCLEvent::Disconnected           => break,
+                _                                => {}
+            }
         }
-    }
-});conn.connect("127.0.0.1:8080").await.unwrap();
+    });
+
+    conn.connect("127.0.0.1:8080").await.unwrap();
 }
+```
 
 ### Connection Pool Example
-```rustuse vcl_protocol::VCLPool;#[tokio::main]
+```rust
+use vcl_protocol::VCLPool;
+
+#[tokio::main]
 async fn main() {
-let mut pool = VCLPool::new(10);let id = pool.bind("127.0.0.1:0").await.unwrap();
-pool.connect(id, "127.0.0.1:8080").await.unwrap();
-pool.send(id, b"Hello from pool!").await.unwrap();let packet = pool.recv(id).await.unwrap();
-println!("{}", String::from_utf8_lossy(&packet.payload));pool.close(id).unwrap();
+    let mut pool = VCLPool::new(10);
+
+    let id = pool.bind("127.0.0.1:0").await.unwrap();
+    pool.connect(id, "127.0.0.1:8080").await.unwrap();
+    pool.send(id, b"Hello from pool!").await.unwrap();
+
+    let packet = pool.recv(id).await.unwrap();
+    println!("{}", String::from_utf8_lossy(&packet.payload));
+
+    pool.close(id).unwrap();
 }
+```
 
 ---
 
 ## 📦 Packet Structure
-```rustpub struct VCLPacket {
-pub version: u8,             // Protocol version (2)
-pub packet_type: PacketType, // Data | Ping | Pong | KeyRotation
-pub sequence: u64,           // Monotonic packet sequence number
-pub prev_hash: Vec<u8>,      // SHA-256 hash of previous packet
-pub nonce: [u8; 24],         // XChaCha20 nonce for encryption
-pub payload: Vec<u8>,        // Decrypted data payload (after recv())
-pub signature: Vec<u8>,      // Ed25519 signature
+```rust
+pub struct VCLPacket {
+    pub version: u8,             // Protocol version (2)
+    pub packet_type: PacketType, // Data | Ping | Pong | KeyRotation
+    pub sequence: u64,           // Monotonic packet sequence number
+    pub prev_hash: Vec<u8>,      // SHA-256 hash of previous packet
+    pub nonce: [u8; 24],         // XChaCha20 nonce for encryption
+    pub payload: Vec<u8>,        // Decrypted data payload (after recv())
+    pub signature: Vec<u8>,      // Ed25519 signature
 }
+```
 
 ---
 
@@ -248,7 +299,8 @@ Additional layer of packet integrity and replay protection for VPN protocols.
 ---
 
 ## 🛠️ Development
-```bashcargo test                         # Run all tests (33/33)
+```bash
+cargo test                         # Run all tests (33/33)
 cargo test --lib                   # Unit tests only
 cargo test --test integration_test # Integration tests only
 cargo bench                        # Run benchmarks
@@ -258,6 +310,7 @@ cargo fmt                          # Format code
 cargo clippy                       # Linting
 cargo build --release              # Release build
 cargo doc --open                   # Generate and open docs locally
+```
 
 ---
 
