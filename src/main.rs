@@ -1,5 +1,5 @@
 mod error;
-mod event;     
+mod event;
 mod packet;
 mod crypto;
 mod connection;
@@ -10,6 +10,8 @@ use tokio::time::{sleep, Duration};
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::fmt::init();
+
     println!("=== VCL Protocol Demo ===\n");
 
     let shared_key = hex::decode(
