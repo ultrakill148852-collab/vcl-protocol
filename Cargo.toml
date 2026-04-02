@@ -1,6 +1,6 @@
 [package]
 name = "vcl-protocol"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "Cryptographically chained packet transport protocol with SHA-256 integrity, Ed25519 signatures, and XChaCha20-Poly1305 encryption"
 license = "MIT"
@@ -9,6 +9,7 @@ authors = ["ultrakill148852-collab"]
 keywords = ["crypto", "networking", "blockchain", "udp", "secure"]
 categories = ["cryptography", "network-programming"]
 readme = "README.md"
+documentation = "https://docs.rs/vcl-protocol"
 
 [dependencies]
 ed25519-dalek = "2.0"
