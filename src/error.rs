@@ -1,21 +1,59 @@
+//! # VCL Error Types
+//!
+//! All errors returned by VCL Protocol operations are represented
+//! as variants of [`VCLError`]. It implements [`std::error::Error`]
+//! and can be used with the `?` operator throughout.
+
 use std::fmt;
 
+/// The main error type for VCL Protocol operations.
+///
+/// Every public method that can fail returns `Result<_, VCLError>`.
+///
+/// # Example
+///
+/// ```no_run
+/// use vcl_protocol::VCLError;
+///
+/// fn handle(err: VCLError) {
+///     match err {
+///         VCLError::ConnectionClosed => println!("Connection was closed"),
+///         VCLError::Timeout          => println!("Timed out"),
+///         other                      => println!("Other error: {}", other),
+///     }
+/// }
+/// ```
 #[derive(Debug)]
 pub enum VCLError {
+    /// Encryption or decryption operation failed.
     CryptoError(String),
+    /// Ed25519 signature verification failed — packet may be tampered.
     SignatureInvalid,
+    /// A key has wrong length or invalid format.
     InvalidKey(String),
+    /// The `prev_hash` field does not match the expected value — chain is broken.
     ChainValidationFailed,
+    /// A packet with this sequence number or nonce was already received.
     ReplayDetected(String),
+    /// Packet has unexpected structure or payload.
     InvalidPacket(String),
+    /// Operation attempted on a closed connection.
     ConnectionClosed,
+    /// No activity for longer than the configured `timeout_secs`.
     Timeout,
+    /// `send()` called before a peer address is known.
     NoPeerAddress,
+    /// `send()` or `recv()` called before the handshake completed.
     NoSharedSecret,
+    /// X25519 handshake could not be completed.
     HandshakeFailed(String),
+    /// Server received a non-ClientHello message during handshake.
     ExpectedClientHello,
+    /// Client received a non-ServerHello message during handshake.
     ExpectedServerHello,
+    /// Bincode serialization or deserialization failed.
     SerializationError(String),
+    /// UDP socket error or address parse failure.
     IoError(String),
 }
 
