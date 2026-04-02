@@ -4,6 +4,7 @@ mod packet;
 mod crypto;
 mod connection;
 mod handshake;
+mod pool;
 
 use connection::VCLConnection;
 use tokio::time::{sleep, Duration};
