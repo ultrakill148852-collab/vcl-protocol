@@ -1,3 +1,16 @@
+//! # VCL Connection
+//!
+//! [`VCLConnection`] is the main entry point for VCL Protocol.
+//! It manages the full lifecycle of a secure UDP connection:
+//!
+//! - X25519 ephemeral handshake
+//! - Packet encryption, signing, and chain validation
+//! - Replay protection
+//! - Session management (close, timeout)
+//! - Connection events via async mpsc channel
+//! - Ping / heartbeat with latency measurement
+//! - Mid-session key rotation
+
 use crate::packet::{VCLPacket, PacketType};
 use crate::crypto::{KeyPair, encrypt_payload, decrypt_payload};
 use crate::handshake::{HandshakeMessage, create_client_hello, process_client_hello, process_server_hello};
@@ -12,6 +25,44 @@ use std::net::SocketAddr;
 use std::collections::HashSet;
 use std::time::Instant;
 
+/// A secure VCL Protocol connection over UDP.
+///
+/// Each connection manages its own cryptographic state:
+/// independent send/receive hash chains, nonce tracking,
+/// shared secret, and Ed25519 key pair.
+///
+/// # Example — Server
+///
+/// ```no_run
+/// use vcl_protocol::connection::VCLConnection;
+///
+/// #[tokio::main]
+/// async fn main() {
+///     let mut server = VCLConnection::bind("127.0.0.1:8080").await.unwrap();
+///     server.accept_handshake().await.unwrap();
+///
+///     loop {
+///         match server.recv().await {
+///             Ok(packet) => println!("{}", String::from_utf8_lossy(&packet.payload)),
+///             Err(e)     => { eprintln!("{}", e); break; }
+///         }
+///     }
+/// }
+/// ```
+///
+/// # Example — Client
+///
+/// ```no_run
+/// use vcl_protocol::connection::VCLConnection;
+///
+/// #[tokio::main]
+/// async fn main() {
+///     let mut client = VCLConnection::bind("127.0.0.1:0").await.unwrap();
+///     client.connect("127.0.0.1:8080").await.unwrap();
+///     client.send(b"Hello!").await.unwrap();
+///     client.close().unwrap();
+/// }
+/// ```
 pub struct VCLConnection {
     socket: UdpSocket,
     keypair: KeyPair,
@@ -33,6 +84,12 @@ pub struct VCLConnection {
 }
 
 impl VCLConnection {
+    /// Bind a new VCL connection to a local UDP address.
+    ///
+    /// Use `"127.0.0.1:0"` to let the OS assign a port (typical for clients).
+    ///
+    /// # Errors
+    /// Returns [`VCLError::IoError`] if the socket cannot be bound.
     pub async fn bind(addr: &str) -> Result<Self, VCLError> {
         let socket = UdpSocket::bind(addr).await?;
         Ok(VCLConnection {
@@ -57,8 +114,13 @@ impl VCLConnection {
 
     // ─── Events ──────────────────────────────────────────────────────────────
 
-    /// Subscribe to connection events. Returns an async receiver channel.
-    /// Call before connect() / accept_handshake() to catch Connected event.
+    /// Subscribe to connection events.
+    ///
+    /// Returns an async `mpsc::Receiver<VCLEvent>` with a channel capacity of 64.
+    /// Call this **before** `connect()` or `accept_handshake()` to receive
+    /// the [`VCLEvent::Connected`] event.
+    ///
+    /// Events are sent with `try_send` — if the channel is full, events are dropped silently.
     pub fn subscribe(&mut self) -> mpsc::Receiver<VCLEvent> {
         let (tx, rx) = mpsc::channel(64);
         self.event_tx = Some(tx);
@@ -73,18 +135,28 @@ impl VCLConnection {
 
     // ─── Configuration ────────────────────────────────────────────────────────
 
+    /// Set the inactivity timeout in seconds (default: 60).
+    ///
+    /// If no `send()` or `recv()` occurs within this duration,
+    /// the next operation returns [`VCLError::Timeout`].
+    /// Set to `0` to disable the timeout.
     pub fn set_timeout(&mut self, secs: u64) {
         self.timeout_secs = secs;
     }
 
+    /// Get the current inactivity timeout in seconds.
     pub fn get_timeout(&self) -> u64 {
         self.timeout_secs
     }
 
+    /// Get the [`Instant`] of the last `send()` or `recv()` activity.
     pub fn last_activity(&self) -> Instant {
         self.last_activity
     }
 
+    /// Override the Ed25519 signing key with a pre-shared key.
+    ///
+    /// ⚠️ **For testing only.** Never use a pre-shared key in production.
     pub fn set_shared_key(&mut self, private_key: &[u8]) {
         let key_bytes: &[u8; 32] = private_key.try_into().unwrap();
         let signing_key = SigningKey::from_bytes(key_bytes);
@@ -95,6 +167,15 @@ impl VCLConnection {
 
     // ─── Handshake ────────────────────────────────────────────────────────────
 
+    /// Connect to a remote VCL server and perform the X25519 handshake.
+    ///
+    /// After this returns `Ok(())`, the connection is ready to `send()` and `recv()`.
+    /// Emits [`VCLEvent::Connected`] if subscribed.
+    ///
+    /// # Errors
+    /// - [`VCLError::IoError`] — socket or address error
+    /// - [`VCLError::HandshakeFailed`] — key exchange failed
+    /// - [`VCLError::ExpectedServerHello`] — unexpected handshake message
     pub async fn connect(&mut self, addr: &str) -> Result<(), VCLError> {
         let parsed: SocketAddr = addr.parse()?;
         self.peer_addr = Some(parsed);
@@ -121,6 +202,16 @@ impl VCLConnection {
         Ok(())
     }
 
+    /// Accept an incoming X25519 handshake from a client (server side).
+    ///
+    /// Blocks until a `ClientHello` is received.
+    /// After this returns `Ok(())`, the connection is ready to `send()` and `recv()`.
+    /// Emits [`VCLEvent::Connected`] if subscribed.
+    ///
+    /// # Errors
+    /// - [`VCLError::IoError`] — socket error
+    /// - [`VCLError::HandshakeFailed`] — key exchange failed
+    /// - [`VCLError::ExpectedClientHello`] — unexpected handshake message
     pub async fn accept_handshake(&mut self) -> Result<(), VCLError> {
         let ephemeral = EphemeralSecret::random_from_rng(OsRng);
 
@@ -175,6 +266,14 @@ impl VCLConnection {
 
     // ─── Public send ──────────────────────────────────────────────────────────
 
+    /// Encrypt, sign, and send a data packet to the peer.
+    ///
+    /// # Errors
+    /// - [`VCLError::ConnectionClosed`] — connection was closed
+    /// - [`VCLError::Timeout`] — inactivity timeout exceeded
+    /// - [`VCLError::NoSharedSecret`] — handshake not completed
+    /// - [`VCLError::NoPeerAddress`] — peer address unknown
+    /// - [`VCLError::IoError`] — socket error
     pub async fn send(&mut self, data: &[u8]) -> Result<(), VCLError> {
         if self.closed { return Err(VCLError::ConnectionClosed); }
         self.check_timeout()?;
@@ -183,9 +282,16 @@ impl VCLConnection {
 
     // ─── Ping / Heartbeat ─────────────────────────────────────────────────────
 
-    /// Send a ping to the peer. The pong reply is handled automatically inside
-    /// recv() — subscribe to events to receive PongReceived { latency }.
-    /// You must keep calling recv() for the pong to be processed.
+    /// Send a ping to the peer to check liveness and measure round-trip latency.
+    ///
+    /// The pong reply is handled **transparently inside `recv()`** — you never
+    /// see Pong packets directly. Subscribe to events to receive
+    /// [`VCLEvent::PongReceived { latency }`](VCLEvent::PongReceived).
+    ///
+    /// ⚠️ You must keep calling `recv()` for the pong to be processed.
+    ///
+    /// # Errors
+    /// Same as [`send()`](VCLConnection::send).
     pub async fn ping(&mut self) -> Result<(), VCLError> {
         if self.closed { return Err(VCLError::ConnectionClosed); }
         self.check_timeout()?;
@@ -207,10 +313,22 @@ impl VCLConnection {
 
     // ─── Key Rotation ──────────────────────────────────────────────────────────
 
-    /// Initiate a key rotation. Generates a new X25519 ephemeral key pair,
-    /// sends the public key to the peer, and waits for the peer's response.
-    /// Both sides atomically switch to the new shared secret.
-    /// The peer must be in an active recv() loop to handle the rotation.
+    /// Initiate a mid-session key rotation using a fresh X25519 ephemeral exchange.
+    ///
+    /// Sends our new public key to the peer (encrypted with the **current** key),
+    /// waits for the peer's new public key, and atomically switches to the new
+    /// shared secret on both sides.
+    ///
+    /// Emits [`VCLEvent::KeyRotated`] on success.
+    ///
+    /// ⚠️ The peer must be actively calling `recv()` during rotation.
+    /// ⚠️ Do not call `send()` while `rotate_keys()` is awaiting a response.
+    ///
+    /// # Errors
+    /// - [`VCLError::ConnectionClosed`] / [`VCLError::Timeout`]
+    /// - [`VCLError::ChainValidationFailed`] / [`VCLError::SignatureInvalid`]
+    /// - [`VCLError::HandshakeFailed`] — unexpected packet type in response
+    /// - [`VCLError::InvalidPacket`] — malformed public key payload
     pub async fn rotate_keys(&mut self) -> Result<(), VCLError> {
         if self.closed { return Err(VCLError::ConnectionClosed); }
         self.check_timeout()?;
@@ -285,6 +403,21 @@ impl VCLConnection {
 
     // ─── Receive ──────────────────────────────────────────────────────────────
 
+    /// Receive the next data packet from the peer.
+    ///
+    /// Control packets (`Ping`, `Pong`, `KeyRotation`) are handled
+    /// **transparently** — this method loops internally until a `Data` packet arrives.
+    ///
+    /// On success, `packet.payload` contains the **decrypted** data.
+    ///
+    /// # Errors
+    /// - [`VCLError::ConnectionClosed`] — connection was closed
+    /// - [`VCLError::Timeout`] — inactivity timeout exceeded
+    /// - [`VCLError::ReplayDetected`] — duplicate sequence or nonce
+    /// - [`VCLError::ChainValidationFailed`] — hash chain broken
+    /// - [`VCLError::SignatureInvalid`] — Ed25519 signature mismatch
+    /// - [`VCLError::CryptoError`] — decryption failed
+    /// - [`VCLError::IoError`] — socket error
     pub async fn recv(&mut self) -> Result<VCLPacket, VCLError> {
         if self.closed { return Err(VCLError::ConnectionClosed); }
 
@@ -342,12 +475,8 @@ impl VCLConnection {
                         signature: packet.signature,
                     });
                 }
-                PacketType::Ping => {
-                    self.handle_ping().await?;
-                }
-                PacketType::Pong => {
-                    self.handle_pong();
-                }
+                PacketType::Ping => { self.handle_ping().await?; }
+                PacketType::Pong => { self.handle_pong(); }
                 PacketType::KeyRotation => {
                     self.handle_key_rotation_request(&decrypted).await?;
                 }
@@ -364,6 +493,13 @@ impl VCLConnection {
         Ok(())
     }
 
+    /// Gracefully close the connection and clear all cryptographic state.
+    ///
+    /// After calling `close()`, all further operations return [`VCLError::ConnectionClosed`].
+    /// Emits [`VCLEvent::Disconnected`] if subscribed.
+    ///
+    /// # Errors
+    /// Returns [`VCLError::ConnectionClosed`] if already closed.
     pub fn close(&mut self) -> Result<(), VCLError> {
         if self.closed {
             return Err(VCLError::ConnectionClosed);
@@ -380,14 +516,18 @@ impl VCLConnection {
         Ok(())
     }
 
+    /// Returns `true` if the connection has been closed.
     pub fn is_closed(&self) -> bool {
         self.closed
     }
 
+    /// Get the local Ed25519 public key (32 bytes).
     pub fn get_public_key(&self) -> Vec<u8> {
         self.keypair.public_key.clone()
     }
 
+    /// Get the current X25519 shared secret, or `None` if the handshake
+    /// has not completed or the connection is closed.
     pub fn get_shared_secret(&self) -> Option<[u8; 32]> {
         self.shared_secret
     }
