@@ -7,6 +7,7 @@
 //! - XChaCha20-Poly1305 authenticated encryption
 //! - Replay protection
 //! - Connection events, ping/heartbeat, mid-session key rotation
+//! - Connection pool for managing multiple peers
 //!
 //! ## Quick Start
 //!
@@ -29,6 +30,8 @@ pub mod packet;
 pub mod crypto;
 pub mod connection;
 pub mod handshake;
+pub mod pool;
 
 pub use error::VCLError;
 pub use event::VCLEvent;
+pub use pool::VCLPool;
