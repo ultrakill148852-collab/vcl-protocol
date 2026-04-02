@@ -10,6 +10,15 @@
 //! - Connection events via async mpsc channel
 //! - Ping / heartbeat with latency measurement
 //! - Mid-session key rotation
+//!
+//! ## Logging
+//!
+//! This module uses the [`tracing`] crate. To see logs in your application,
+//! add a subscriber such as `tracing-subscriber`:
+//!
+//! ```no_run
+//! tracing_subscriber::fmt::init();
+//! ```
 
 use crate::packet::{VCLPacket, PacketType};
 use crate::crypto::{KeyPair, encrypt_payload, decrypt_payload};
@@ -24,6 +33,7 @@ use tokio::sync::mpsc;
 use std::net::SocketAddr;
 use std::collections::HashSet;
 use std::time::Instant;
+use tracing::{debug, info, warn, error};
 
 /// A secure VCL Protocol connection over UDP.
 ///
@@ -92,6 +102,10 @@ impl VCLConnection {
     /// Returns [`VCLError::IoError`] if the socket cannot be bound.
     pub async fn bind(addr: &str) -> Result<Self, VCLError> {
         let socket = UdpSocket::bind(addr).await?;
+        let local_addr = socket.local_addr()
+            .map(|a| a.to_string())
+            .unwrap_or_else(|_| addr.to_string());
+        info!(addr = %local_addr, "VCLConnection bound");
         Ok(VCLConnection {
             socket,
             keypair: KeyPair::generate(),
@@ -122,6 +136,7 @@ impl VCLConnection {
     ///
     /// Events are sent with `try_send` — if the channel is full, events are dropped silently.
     pub fn subscribe(&mut self) -> mpsc::Receiver<VCLEvent> {
+        debug!("Event subscription registered");
         let (tx, rx) = mpsc::channel(64);
         self.event_tx = Some(tx);
         rx
@@ -141,6 +156,7 @@ impl VCLConnection {
     /// the next operation returns [`VCLError::Timeout`].
     /// Set to `0` to disable the timeout.
     pub fn set_timeout(&mut self, secs: u64) {
+        debug!(timeout_secs = secs, "Inactivity timeout updated");
         self.timeout_secs = secs;
     }
 
@@ -158,6 +174,7 @@ impl VCLConnection {
     ///
     /// ⚠️ **For testing only.** Never use a pre-shared key in production.
     pub fn set_shared_key(&mut self, private_key: &[u8]) {
+        debug!("Pre-shared key set (testing mode)");
         let key_bytes: &[u8; 32] = private_key.try_into().unwrap();
         let signing_key = SigningKey::from_bytes(key_bytes);
         let verifying_key = signing_key.verifying_key();
@@ -177,12 +194,14 @@ impl VCLConnection {
     /// - [`VCLError::HandshakeFailed`] — key exchange failed
     /// - [`VCLError::ExpectedServerHello`] — unexpected handshake message
     pub async fn connect(&mut self, addr: &str) -> Result<(), VCLError> {
+        info!(peer = %addr, "Initiating handshake (client)");
         let parsed: SocketAddr = addr.parse()?;
         self.peer_addr = Some(parsed);
 
         let (hello_msg, ephemeral) = create_client_hello();
         let hello_bytes = bincode::serialize(&hello_msg)?;
         self.socket.send_to(&hello_bytes, parsed).await?;
+        debug!(peer = %addr, "ClientHello sent");
 
         let mut buf = vec![0u8; 65535];
         let (len, _) = self.socket.recv_from(&mut buf).await?;
@@ -193,11 +212,16 @@ impl VCLConnection {
                 let shared = process_server_hello(ephemeral, public_key)
                     .ok_or_else(|| VCLError::HandshakeFailed("Key exchange failed".to_string()))?;
                 self.shared_secret = Some(shared);
+                debug!(peer = %addr, "ServerHello received, shared secret established");
             }
-            _ => return Err(VCLError::ExpectedServerHello),
+            _ => {
+                warn!(peer = %addr, "Expected ServerHello, got unexpected message");
+                return Err(VCLError::ExpectedServerHello);
+            }
         }
 
         self.last_activity = Instant::now();
+        info!(peer = %addr, "Handshake complete (client)");
         self.emit(VCLEvent::Connected);
         Ok(())
     }
@@ -213,11 +237,13 @@ impl VCLConnection {
     /// - [`VCLError::HandshakeFailed`] — key exchange failed
     /// - [`VCLError::ExpectedClientHello`] — unexpected handshake message
     pub async fn accept_handshake(&mut self) -> Result<(), VCLError> {
+        info!("Waiting for ClientHello (server)");
         let ephemeral = EphemeralSecret::random_from_rng(OsRng);
 
         let mut buf = vec![0u8; 65535];
         let (len, addr) = self.socket.recv_from(&mut buf).await?;
         self.peer_addr = Some(addr);
+        debug!(peer = %addr, "ClientHello received");
 
         let client_hello: HandshakeMessage = bincode::deserialize(&buf[..len])?;
 
@@ -226,15 +252,20 @@ impl VCLConnection {
                 let (server_hello, shared) = process_client_hello(ephemeral, public_key);
                 let hello_bytes = bincode::serialize(&server_hello)?;
                 self.socket.send_to(&hello_bytes, addr).await?;
+                debug!(peer = %addr, "ServerHello sent");
                 self.shared_secret = Some(
                     shared.ok_or_else(|| VCLError::HandshakeFailed("Key exchange failed".to_string()))?
                 );
                 self.is_server = true;
             }
-            _ => return Err(VCLError::ExpectedClientHello),
+            _ => {
+                warn!(peer = %addr, "Expected ClientHello, got unexpected message");
+                return Err(VCLError::ExpectedClientHello);
+            }
         }
 
         self.last_activity = Instant::now();
+        info!(peer = %addr, "Handshake complete (server)");
         self.emit(VCLEvent::Connected);
         Ok(())
     }
@@ -258,6 +289,14 @@ impl VCLConnection {
         let addr = self.peer_addr.ok_or(VCLError::NoPeerAddress)?;
         self.socket.send_to(&serialized, addr).await?;
 
+        debug!(
+            peer = %addr,
+            seq = self.send_sequence,
+            size = data.len(),
+            packet_type = ?packet.packet_type,
+            "Packet sent"
+        );
+
         self.send_hash = packet.compute_hash();
         self.send_sequence += 1;
         self.last_activity = Instant::now();
@@ -275,7 +314,10 @@ impl VCLConnection {
     /// - [`VCLError::NoPeerAddress`] — peer address unknown
     /// - [`VCLError::IoError`] — socket error
     pub async fn send(&mut self, data: &[u8]) -> Result<(), VCLError> {
-        if self.closed { return Err(VCLError::ConnectionClosed); }
+        if self.closed {
+            error!("send() called on closed connection");
+            return Err(VCLError::ConnectionClosed);
+        }
         self.check_timeout()?;
         self.send_internal(data, PacketType::Data).await
     }
@@ -293,13 +335,18 @@ impl VCLConnection {
     /// # Errors
     /// Same as [`send()`](VCLConnection::send).
     pub async fn ping(&mut self) -> Result<(), VCLError> {
-        if self.closed { return Err(VCLError::ConnectionClosed); }
+        if self.closed {
+            error!("ping() called on closed connection");
+            return Err(VCLError::ConnectionClosed);
+        }
         self.check_timeout()?;
+        debug!("Ping sent");
         self.ping_sent_at = Some(Instant::now());
         self.send_internal(&[], PacketType::Ping).await
     }
 
     async fn handle_ping(&mut self) -> Result<(), VCLError> {
+        debug!("Ping received, sending Pong");
         self.send_internal(&[], PacketType::Pong).await?;
         self.emit(VCLEvent::PingReceived);
         Ok(())
@@ -307,7 +354,9 @@ impl VCLConnection {
 
     fn handle_pong(&mut self) {
         if let Some(sent_at) = self.ping_sent_at.take() {
-            self.emit(VCLEvent::PongReceived { latency: sent_at.elapsed() });
+            let latency = sent_at.elapsed();
+            debug!(latency_us = latency.as_micros(), "Pong received");
+            self.emit(VCLEvent::PongReceived { latency });
         }
     }
 
@@ -330,29 +379,37 @@ impl VCLConnection {
     /// - [`VCLError::HandshakeFailed`] — unexpected packet type in response
     /// - [`VCLError::InvalidPacket`] — malformed public key payload
     pub async fn rotate_keys(&mut self) -> Result<(), VCLError> {
-        if self.closed { return Err(VCLError::ConnectionClosed); }
+        if self.closed {
+            error!("rotate_keys() called on closed connection");
+            return Err(VCLError::ConnectionClosed);
+        }
         self.check_timeout()?;
+        info!("Initiating key rotation");
 
         let our_ephemeral = EphemeralSecret::random_from_rng(OsRng);
         let our_public = PublicKey::from(&our_ephemeral);
 
         self.send_internal(&our_public.to_bytes(), PacketType::KeyRotation).await?;
+        debug!("KeyRotation request sent, waiting for response");
 
         let mut buf = vec![0u8; 65535];
         let (len, _) = self.socket.recv_from(&mut buf).await?;
         let packet = VCLPacket::deserialize(&buf[..len])?;
 
         if self.seen_nonces.contains(&packet.nonce) {
+            warn!("Replay detected during key rotation: duplicate nonce");
             return Err(VCLError::ReplayDetected("Duplicate nonce in key rotation".to_string()));
         }
         self.seen_nonces.insert(packet.nonce);
 
         if !packet.validate_chain(&self.recv_hash) {
+            warn!("Chain validation failed during key rotation");
             return Err(VCLError::ChainValidationFailed);
         }
 
         let verify_key = self.peer_public_key.as_ref().unwrap_or(&self.keypair.public_key);
         if !packet.verify(verify_key)? {
+            warn!("Signature invalid during key rotation");
             return Err(VCLError::SignatureInvalid);
         }
 
@@ -364,9 +421,11 @@ impl VCLConnection {
         let decrypted = decrypt_payload(&packet.payload, &old_key, &packet.nonce)?;
 
         if packet.packet_type != PacketType::KeyRotation {
+            warn!("Expected KeyRotation response, got {:?}", packet.packet_type);
             return Err(VCLError::HandshakeFailed("Expected KeyRotation response".to_string()));
         }
         if decrypted.len() != 32 {
+            warn!("KeyRotation payload has wrong length: {}", decrypted.len());
             return Err(VCLError::InvalidPacket("KeyRotation payload must be 32 bytes".to_string()));
         }
 
@@ -376,12 +435,15 @@ impl VCLConnection {
         let their_pubkey = PublicKey::from(their_bytes);
         let new_secret = our_ephemeral.diffie_hellman(&their_pubkey);
         self.shared_secret = Some(new_secret.to_bytes());
+        info!("Key rotation complete");
         self.emit(VCLEvent::KeyRotated);
         Ok(())
     }
 
     async fn handle_key_rotation_request(&mut self, their_pubkey_bytes: &[u8]) -> Result<(), VCLError> {
+        debug!("KeyRotation request received, processing");
         if their_pubkey_bytes.len() != 32 {
+            warn!("KeyRotation payload has wrong length: {}", their_pubkey_bytes.len());
             return Err(VCLError::InvalidPacket("KeyRotation payload must be 32 bytes".to_string()));
         }
 
@@ -395,8 +457,10 @@ impl VCLConnection {
         let new_secret = our_ephemeral.diffie_hellman(&their_pubkey);
 
         self.send_internal(&our_public.to_bytes(), PacketType::KeyRotation).await?;
+        debug!("KeyRotation response sent");
 
         self.shared_secret = Some(new_secret.to_bytes());
+        info!("Key rotation complete (responder)");
         self.emit(VCLEvent::KeyRotated);
         Ok(())
     }
@@ -419,7 +483,10 @@ impl VCLConnection {
     /// - [`VCLError::CryptoError`] — decryption failed
     /// - [`VCLError::IoError`] — socket error
     pub async fn recv(&mut self) -> Result<VCLPacket, VCLError> {
-        if self.closed { return Err(VCLError::ConnectionClosed); }
+        if self.closed {
+            error!("recv() called on closed connection");
+            return Err(VCLError::ConnectionClosed);
+        }
 
         loop {
             self.check_timeout()?;
@@ -433,22 +500,31 @@ impl VCLConnection {
             let packet = VCLPacket::deserialize(&buf[..len])?;
 
             if self.last_sequence > 0 && packet.sequence <= self.last_sequence {
+                warn!(
+                    seq = packet.sequence,
+                    last_seq = self.last_sequence,
+                    "Replay detected: old sequence number"
+                );
                 return Err(VCLError::ReplayDetected("Old sequence number".to_string()));
             }
             if self.seen_nonces.contains(&packet.nonce) {
+                warn!(seq = packet.sequence, "Replay detected: duplicate nonce");
                 return Err(VCLError::ReplayDetected("Duplicate nonce".to_string()));
             }
             self.seen_nonces.insert(packet.nonce);
             if self.seen_nonces.len() > 1000 {
+                debug!("Nonce window full, clearing");
                 self.seen_nonces.clear();
             }
 
             if !packet.validate_chain(&self.recv_hash) {
+                warn!(seq = packet.sequence, "Chain validation failed");
                 return Err(VCLError::ChainValidationFailed);
             }
 
             let verify_key = self.peer_public_key.as_ref().unwrap_or(&self.keypair.public_key);
             if !packet.verify(verify_key)? {
+                warn!(seq = packet.sequence, "Signature invalid");
                 return Err(VCLError::SignatureInvalid);
             }
 
@@ -461,6 +537,12 @@ impl VCLConnection {
 
             match packet.packet_type {
                 PacketType::Data => {
+                    debug!(
+                        peer = %addr,
+                        seq = packet.sequence,
+                        size = decrypted.len(),
+                        "Data packet received"
+                    );
                     self.emit(VCLEvent::PacketReceived {
                         sequence: packet.sequence,
                         size: decrypted.len(),
@@ -488,6 +570,11 @@ impl VCLConnection {
 
     fn check_timeout(&self) -> Result<(), VCLError> {
         if self.last_activity.elapsed().as_secs() > self.timeout_secs {
+            warn!(
+                elapsed_secs = self.last_activity.elapsed().as_secs(),
+                timeout_secs = self.timeout_secs,
+                "Connection timed out"
+            );
             return Err(VCLError::Timeout);
         }
         Ok(())
@@ -502,8 +589,10 @@ impl VCLConnection {
     /// Returns [`VCLError::ConnectionClosed`] if already closed.
     pub fn close(&mut self) -> Result<(), VCLError> {
         if self.closed {
+            warn!("close() called on already closed connection");
             return Err(VCLError::ConnectionClosed);
         }
+        info!("Connection closed");
         self.closed = true;
         self.send_sequence = 0;
         self.send_hash = vec![0; 32];
