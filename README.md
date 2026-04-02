@@ -123,7 +123,7 @@ Error(msg)         → non-fatal internal error
 ## 🚀 Quick Start
 
 ### Installation
-```bashcurl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+bashcurl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 cargo add vcl-protocol
 
 ### Run Demo
