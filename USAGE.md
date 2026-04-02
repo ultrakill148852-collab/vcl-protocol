@@ -409,11 +409,6 @@ MIT License — see LICENSE file for details.
 - Full test suite: 17 passing tests (10 unit + 7 integration)
 - Documentation: README + USAGE + API reference
 
-### Planned for v0.3.0
-- Concurrent-safe key rotation (two-phase commit)
-- Connection pooling
-- WebSocket transport option
-- Connection multiplexing
 
 ---
 
