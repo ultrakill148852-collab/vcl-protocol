@@ -1,36 +1,67 @@
+//! # VCL Packet
+//!
+//! Defines [`VCLPacket`] — the core unit of data transmission in VCL Protocol —
+//! and [`PacketType`] which determines how the connection layer routes each packet.
+//!
+//! Every packet is:
+//! - **Chained** — contains the SHA-256 hash of the previous packet in the same direction
+//! - **Signed** — Ed25519 signature over the packet hash
+//! - **Encrypted** — payload encrypted with XChaCha20-Poly1305
+
 use sha2::{Sha256, Digest};
 use ed25519_dalek::{SigningKey, VerifyingKey, Signature, Signer, Verifier};
 use serde::{Serialize, Deserialize};
 use crate::error::VCLError;
 
-/// Type of a VCL packet.
-/// Determines how the connection layer routes the packet after decryption.
+/// Determines how a [`VCLPacket`] is routed by the connection layer.
+///
+/// Users only interact with `Data` packets directly.
+/// `Ping`, `Pong`, and `KeyRotation` are handled transparently inside `recv()`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum PacketType {
+    /// A regular data packet — returned by [`VCLConnection::recv()`](crate::connection::VCLConnection::recv).
     Data,
+    /// Liveness check sent by [`VCLConnection::ping()`](crate::connection::VCLConnection::ping).
     Ping,
+    /// Automatic reply to a [`Ping`](PacketType::Ping). Handled inside `recv()`.
     Pong,
+    /// Mid-session key rotation initiated by [`VCLConnection::rotate_keys()`](crate::connection::VCLConnection::rotate_keys).
     KeyRotation,
 }
 
+/// A single unit of data transmission in VCL Protocol.
+///
+/// Packets are created, signed, and serialized internally by [`VCLConnection`].
+/// After `recv()` returns, `payload` contains the **decrypted** data.
+///
+/// [`VCLConnection`]: crate::connection::VCLConnection
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct VCLPacket {
+    /// Protocol version. Currently `2`.
     pub version: u8,
+    /// Routing type — see [`PacketType`].
     pub packet_type: PacketType,
+    /// Monotonically increasing sequence number (per direction).
     pub sequence: u64,
+    /// SHA-256 hash of the previous packet in the same direction.
+    /// All-zeros for the first packet.
     pub prev_hash: Vec<u8>,
+    /// 24-byte XChaCha20 nonce used to encrypt this packet's payload.
     pub nonce: [u8; 24],
+    /// After `recv()`: decrypted payload. On the wire: XChaCha20-Poly1305 ciphertext.
     pub payload: Vec<u8>,
+    /// 64-byte Ed25519 signature over the packet hash.
     pub signature: Vec<u8>,
 }
 
 impl VCLPacket {
-    /// Create a Data packet (default, used by send())
+    /// Create a new [`PacketType::Data`] packet.
     pub fn new(sequence: u64, prev_hash: Vec<u8>, payload: Vec<u8>, nonce: [u8; 24]) -> Self {
         Self::new_typed(sequence, prev_hash, payload, nonce, PacketType::Data)
     }
 
-    /// Create a packet of a specific type (used internally)
+    /// Create a packet with a specific [`PacketType`].
+    /// Used internally for Ping, Pong, and KeyRotation packets.
     pub fn new_typed(
         sequence: u64,
         prev_hash: Vec<u8>,
@@ -49,6 +80,8 @@ impl VCLPacket {
         }
     }
 
+    /// Compute the SHA-256 hash of this packet (version + sequence + prev_hash + nonce + payload).
+    /// Used for chain linking and signature generation.
     pub fn compute_hash(&self) -> Vec<u8> {
         let mut hasher = Sha256::new();
         hasher.update(self.version.to_be_bytes());
@@ -59,6 +92,11 @@ impl VCLPacket {
         hasher.finalize().to_vec()
     }
 
+    /// Sign this packet with an Ed25519 `private_key` (32 bytes).
+    /// Sets `self.signature` to the 64-byte signature.
+    ///
+    /// # Errors
+    /// Returns [`VCLError::InvalidKey`] if `private_key` is not 32 bytes.
     pub fn sign(&mut self, private_key: &[u8]) -> Result<(), VCLError> {
         let key_bytes: &[u8; 32] = private_key
             .try_into()
@@ -70,6 +108,12 @@ impl VCLPacket {
         Ok(())
     }
 
+    /// Verify the Ed25519 signature against `public_key` (32 bytes).
+    ///
+    /// Returns `Ok(true)` if valid, `Ok(false)` if the signature does not match.
+    ///
+    /// # Errors
+    /// Returns [`VCLError::InvalidKey`] if `public_key` is malformed.
     pub fn verify(&self, public_key: &[u8]) -> Result<bool, VCLError> {
         if self.signature.len() != 64 {
             return Ok(false);
@@ -88,14 +132,21 @@ impl VCLPacket {
         Ok(verifying_key.verify(&hash, &signature).is_ok())
     }
 
+    /// Returns `true` if `self.prev_hash` matches `expected_prev_hash`.
+    /// Called on every incoming packet to verify chain continuity.
     pub fn validate_chain(&self, expected_prev_hash: &[u8]) -> bool {
         self.prev_hash == expected_prev_hash
     }
 
+    /// Serialize this packet to bytes using bincode.
     pub fn serialize(&self) -> Vec<u8> {
         bincode::serialize(self).unwrap()
     }
 
+    /// Deserialize a packet from bytes.
+    ///
+    /// # Errors
+    /// Returns [`VCLError::SerializationError`] if the bytes are malformed.
     pub fn deserialize(data: &[u8]) -> Result<Self, VCLError> {
         bincode::deserialize(data).map_err(|e| VCLError::SerializationError(e.to_string()))
     }
