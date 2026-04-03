@@ -33,9 +33,11 @@ pub mod handshake;
 pub mod pool;
 pub mod config;
 pub mod transport;
+pub mod fragment;
 
 pub use error::VCLError;
 pub use event::VCLEvent;
 pub use pool::VCLPool;
 pub use config::VCLConfig;
 pub use transport::VCLTransport;
+pub use fragment::{Fragmenter, Reassembler, Fragment};
