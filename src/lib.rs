@@ -32,8 +32,10 @@ pub mod connection;
 pub mod handshake;
 pub mod pool;
 pub mod config;
+pub mod transport;
 
 pub use error::VCLError;
 pub use event::VCLEvent;
 pub use pool::VCLPool;
 pub use config::VCLConfig;
+pub use transport::VCLTransport;
