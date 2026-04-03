@@ -6,6 +6,7 @@ mod connection;
 mod handshake;
 mod pool;
 mod config;
+mod transport;
 
 use connection::VCLConnection;
 use tokio::time::{sleep, Duration};
