@@ -10,9 +10,9 @@
 [![Crates.io](https://img.shields.io/crates/v/vcl-protocol.svg)](https://crates.io/crates/vcl-protocol)
 [![Docs.rs](https://docs.rs/vcl-protocol/badge.svg)](https://docs.rs/vcl-protocol)
 [![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://www.rust-lang.org)
-[![Tests](https://img.shields.io/badge/tests-33%2F33%20passing-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-89%2F89%20passing-brightgreen.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-v0.3.0%20Stable-green.svg)]()
+[![Status](https://img.shields.io/badge/Status-v0.4.0%20Stable-green.svg)]()
 
 **Verified Commit Link** — Cryptographically chained packet transport protocol
 
@@ -28,7 +28,7 @@
 
 VCL Protocol is a transport protocol where each packet cryptographically links to the previous one, creating an immutable chain of data transmission. Inspired by blockchain principles, optimized for real-time networking.
 
-**v0.3.0** adds full API documentation on docs.rs, tracing-based logging, criterion benchmarks, and a Connection Pool for managing multiple peers simultaneously.
+**v0.4.0** adds a hybrid transport system with TCP/UDP abstraction, automatic packet fragmentation and reassembly, sliding window flow control, and a flexible configuration system with presets for VPN, gaming, and streaming use cases.
 
 **Published on crates.io:** https://crates.io/crates/vcl-protocol
 **API Documentation:** https://docs.rs/vcl-protocol
@@ -48,20 +48,25 @@ VCL Protocol is a transport protocol where each packet cryptographically links t
 | ⏱️ Inactivity Timeout | Auto-close idle connections (configurable) |
 | ✅ Chain Validation | Automatic integrity checking on every packet |
 | ⚡ UDP Transport | Low latency, high performance |
+| 🔌 TCP Transport | Reliable ordered delivery for VPN scenarios |
+| 🔀 Transport Abstraction | Single API works with both TCP and UDP |
 | 🚫 Custom Error Types | Typed `VCLError` enum with full `std::error::Error` impl |
 | 📡 Connection Events | Subscribe to lifecycle & data events via async mpsc channel |
 | 🏓 Ping / Heartbeat | Built-in ping/pong with automatic round-trip latency measurement |
 | 🔄 Key Rotation | Rotate encryption keys mid-session without reconnecting |
 | 🏊 Connection Pool | Manage multiple connections under a single `VCLPool` manager |
+| 🧩 Packet Fragmentation | Automatic split and reassembly for large payloads |
+| 🌊 Flow Control | Sliding window with RTT estimation and retransmission detection |
+| ⚙️ Config Presets | VPN, Gaming, Streaming, Auto — one line setup |
 | 📝 Tracing Logs | Structured logging via `tracing` crate |
 | 📊 Benchmarks | Performance benchmarks via `criterion` |
 | 📖 Full API Docs | Complete documentation on [docs.rs](https://docs.rs/vcl-protocol) |
-| 🧪 Full Test Suite | 33/33 tests passing (unit + integration + doc) |
+| 🧪 Full Test Suite | 89/89 tests passing (unit + integration + doc) |
 
 ---
 
 ## 🏗️ Architecture
-```
+```text
 Packet N        Packet N+1      Packet N+2
 +--------+     +--------+     +--------+
 | hash   |     | prev   |     | prev   |
@@ -74,7 +79,7 @@ hash(Packet N+1) -> stored in prev_hash of Packet N+2
 ```
 
 ### Handshake Flow
-```
+```text
 Client                          Server
    |                               |
    | -- ClientHello (pubkey) ----> |
@@ -86,13 +91,13 @@ Client                          Server
 ```
 
 ### Encryption Flow
-```
-Send: plaintext → encrypt(XChaCha20) → sign(Ed25519) → send
-Recv: receive → verify(Ed25519) → decrypt(XChaCha20) → plaintext
+```text
+Send: plaintext → fragment? → encrypt(XChaCha20) → sign(Ed25519) → send
+Recv: receive → verify(Ed25519) → decrypt(XChaCha20) → reassemble? → plaintext
 ```
 
 ### Session Management
-```
+```text
 - close()         → Gracefully close connection, clear state
 - is_closed()     → Check if connection is closed
 - set_timeout()   → Configure inactivity timeout (default: 60s)
@@ -100,7 +105,7 @@ Recv: receive → verify(Ed25519) → decrypt(XChaCha20) → plaintext
 ```
 
 ### Event Flow
-```
+```text
 conn.subscribe() → mpsc::Receiver<VCLEvent>
 
 Events:
@@ -114,7 +119,7 @@ Events:
 ```
 
 ### Key Rotation Flow
-```
+```text
 Client                              Server
    |                                   |
    | -- KeyRotation(new_pubkey) -----> |
@@ -125,7 +130,7 @@ Client                              Server
 ```
 
 ### Connection Pool
-```
+```text
 VCLPool::new(max)
    |
    ├── bind("addr") → ConnectionId(0)
@@ -139,6 +144,42 @@ VCLPool::new(max)
    ├── rotate_keys(id)
    ├── close(id)
    └── close_all()
+```
+
+### Fragmentation Flow (v0.4.0)
+```text
+send(large_payload)
+   |
+   ├── payload > fragment_size?
+   |     YES → Fragmenter::split → [Frag0][Frag1][Frag2]...
+   |            each fragment encrypted + signed separately
+   |     NO  → single Data packet
+   |
+recv()
+   |
+   ├── PacketType::Fragment → Reassembler::add(frag)
+   |     incomplete → loop, wait for more fragments
+   |     complete   → return reassembled VCLPacket
+   └── PacketType::Data → return directly
+```
+
+### Flow Control (v0.4.0)
+```text
+FlowController (sliding window)
+   |
+   ├── can_send()          → window has space?
+   ├── on_send(seq)        → register packet as in-flight
+   ├── on_ack(seq)         → remove from window, update RTT
+   ├── timed_out_packets() → detect lost packets
+   └── loss_rate()         → f64 packet loss rate
+```
+
+### Config Presets (v0.4.0)
+```text
+VCLConfig::vpn()       → TCP + Reliable   (VPN, file transfer)
+VCLConfig::gaming()    → UDP + Partial    (games, real-time)
+VCLConfig::streaming() → UDP + Unreliable (video, audio)
+VCLConfig::auto()      → Auto + Adaptive  (recommended default)
 ```
 
 ---
@@ -211,13 +252,31 @@ async fn main() {
 }
 ```
 
+### Config Preset Example (v0.4.0)
+```rust
+use vcl_protocol::connection::VCLConnection;
+use vcl_protocol::config::VCLConfig;
+
+#[tokio::main]
+async fn main() {
+    let mut server = VCLConnection::bind_with_config(
+        "127.0.0.1:8080",
+        VCLConfig::vpn()
+    ).await.unwrap();
+
+    server.accept_handshake().await.unwrap();
+    let packet = server.recv().await.unwrap();
+    println!("Received: {}", String::from_utf8_lossy(&packet.payload));
+}
+```
+
 ---
 
 ## 📦 Packet Structure
 ```rust
 pub struct VCLPacket {
     pub version: u8,             // Protocol version (2)
-    pub packet_type: PacketType, // Data | Ping | Pong | KeyRotation
+    pub packet_type: PacketType, // Data | Ping | Pong | KeyRotation | Fragment
     pub sequence: u64,           // Monotonic packet sequence number
     pub prev_hash: Vec<u8>,      // SHA-256 hash of previous packet
     pub nonce: [u8; 24],         // XChaCha20 nonce for encryption
@@ -263,7 +322,7 @@ Cryptographically proven data integrity for compliance and debugging.
 Authenticated, encrypted channel with replay protection and session management.
 
 ### 🌐 VPN Tunnels
-Additional layer of packet integrity and replay protection for VPN protocols.
+TCP transport + reliable delivery + fragmentation — ready for VPN-grade traffic.
 
 ---
 
@@ -278,9 +337,23 @@ Additional layer of packet integrity and replay protection for VPN protocols.
 - **Replay Protection:** Sequence validation + nonce tracking (1000-entry window)
 
 ### Transport
-- **Protocol:** UDP
+- **UDP** — low latency, default
+- **TCP** — reliable, ordered (VPN mode)
 - **Runtime:** Tokio async
 - **Max Packet Size:** 65535 bytes
+- **TCP Framing:** 4-byte big-endian length prefix
+
+### Fragmentation (v0.4.0)
+- **Threshold:** configurable via `VCLConfig::fragment_size` (default 1200 bytes)
+- **Out-of-order reassembly:** supported
+- **Duplicate fragments:** silently ignored
+- **Max pending messages:** 256 (configurable)
+
+### Flow Control (v0.4.0)
+- **Algorithm:** Sliding window
+- **RTT estimation:** SRTT = 7/8 × SRTT + 1/8 × RTT
+- **RTO:** dynamic, min 50ms
+- **Window size:** configurable via `VCLConfig::flow_window_size`
 
 ### Serialization
 - **Format:** Bincode
@@ -300,7 +373,7 @@ Additional layer of packet integrity and replay protection for VPN protocols.
 
 ## 🛠️ Development
 ```bash
-cargo test                         # Run all tests (33/33)
+cargo test                         # Run all tests (89/89)
 cargo test --lib                   # Unit tests only
 cargo test --test integration_test # Integration tests only
 cargo bench                        # Run benchmarks
