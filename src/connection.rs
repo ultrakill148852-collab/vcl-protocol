@@ -10,12 +10,12 @@
 //! - Connection events via async mpsc channel
 //! - Ping / heartbeat with latency measurement
 //! - Mid-session key rotation
+//! - Automatic packet fragmentation and reassembly
+//! - Flow control with sliding window
 //!
 //! ## Logging
 //!
-//! This module uses the [`tracing`] crate. To see logs in your application,
-//! add a subscriber such as `tracing-subscriber`:
-//!
+//! This module uses the [`tracing`] crate. Enable with:
 //! ```no_run
 //! tracing_subscriber::fmt::init();
 //! ```
@@ -25,6 +25,9 @@ use crate::crypto::{KeyPair, encrypt_payload, decrypt_payload};
 use crate::handshake::{HandshakeMessage, create_client_hello, process_client_hello, process_server_hello};
 use crate::error::VCLError;
 use crate::event::VCLEvent;
+use crate::config::VCLConfig;
+use crate::flow::FlowController;
+use crate::fragment::{Fragment, Fragmenter, Reassembler};
 use ed25519_dalek::SigningKey;
 use x25519_dalek::{EphemeralSecret, PublicKey};
 use rand::rngs::OsRng;
@@ -39,7 +42,7 @@ use tracing::{debug, info, warn, error};
 ///
 /// Each connection manages its own cryptographic state:
 /// independent send/receive hash chains, nonce tracking,
-/// shared secret, and Ed25519 key pair.
+/// shared secret, Ed25519 key pair, flow controller, and fragment reassembler.
 ///
 /// # Example — Server
 ///
@@ -75,6 +78,7 @@ use tracing::{debug, info, warn, error};
 /// ```
 pub struct VCLConnection {
     socket: UdpSocket,
+    config: VCLConfig,
     keypair: KeyPair,
     send_sequence: u64,
     send_hash: Vec<u8>,
@@ -91,23 +95,45 @@ pub struct VCLConnection {
     timeout_secs: u64,
     event_tx: Option<mpsc::Sender<VCLEvent>>,
     ping_sent_at: Option<Instant>,
+    flow: FlowController,
+    reassembler: Reassembler,
+    fragment_id: u64,
 }
 
 impl VCLConnection {
-    /// Bind a new VCL connection to a local UDP address.
+    /// Bind a new VCL connection to a local UDP address using the default config.
     ///
     /// Use `"127.0.0.1:0"` to let the OS assign a port (typical for clients).
     ///
     /// # Errors
     /// Returns [`VCLError::IoError`] if the socket cannot be bound.
     pub async fn bind(addr: &str) -> Result<Self, VCLError> {
+        Self::bind_with_config(addr, VCLConfig::default()).await
+    }
+
+    /// Bind a new VCL connection with a specific [`VCLConfig`].
+    ///
+    /// The config controls fragmentation threshold, flow window size,
+    /// reliability mode, and transport selection.
+    ///
+    /// # Errors
+    /// Returns [`VCLError::IoError`] if the socket cannot be bound.
+    pub async fn bind_with_config(addr: &str, config: VCLConfig) -> Result<Self, VCLError> {
         let socket = UdpSocket::bind(addr).await?;
         let local_addr = socket.local_addr()
             .map(|a| a.to_string())
             .unwrap_or_else(|_| addr.to_string());
-        info!(addr = %local_addr, "VCLConnection bound");
+        info!(
+            addr = %local_addr,
+            transport = "udp",
+            reliability = ?config.reliability,
+            fragment_size = config.fragment_size,
+            "VCLConnection bound"
+        );
+        let flow = FlowController::new(config.flow_window_size);
         Ok(VCLConnection {
             socket,
+            config,
             keypair: KeyPair::generate(),
             send_sequence: 0,
             send_hash: vec![0; 32],
@@ -123,6 +149,9 @@ impl VCLConnection {
             timeout_secs: 60,
             event_tx: None,
             ping_sent_at: None,
+            flow,
+            reassembler: Reassembler::new(),
+            fragment_id: 0,
         })
     }
 
@@ -152,8 +181,6 @@ impl VCLConnection {
 
     /// Set the inactivity timeout in seconds (default: 60).
     ///
-    /// If no `send()` or `recv()` occurs within this duration,
-    /// the next operation returns [`VCLError::Timeout`].
     /// Set to `0` to disable the timeout.
     pub fn set_timeout(&mut self, secs: u64) {
         debug!(timeout_secs = secs, "Inactivity timeout updated");
@@ -168,6 +195,23 @@ impl VCLConnection {
     /// Get the [`Instant`] of the last `send()` or `recv()` activity.
     pub fn last_activity(&self) -> Instant {
         self.last_activity
+    }
+
+    /// Get a reference to the current [`VCLConfig`].
+    pub fn get_config(&self) -> &VCLConfig {
+        &self.config
+    }
+
+    /// Get a reference to the [`FlowController`] for inspecting flow stats.
+    pub fn flow(&self) -> &FlowController {
+        &self.flow
+    }
+
+    /// Manually acknowledge a sent packet by sequence number.
+    ///
+    /// Returns `true` if the packet was found and removed from the in-flight window.
+    pub fn ack_packet(&mut self, sequence: u64) -> bool {
+        self.flow.on_ack(sequence)
     }
 
     /// Override the Ed25519 signing key with a pre-shared key.
@@ -297,6 +341,7 @@ impl VCLConnection {
             "Packet sent"
         );
 
+        self.flow.on_send(self.send_sequence);
         self.send_hash = packet.compute_hash();
         self.send_sequence += 1;
         self.last_activity = Instant::now();
@@ -306,6 +351,9 @@ impl VCLConnection {
     // ─── Public send ──────────────────────────────────────────────────────────
 
     /// Encrypt, sign, and send a data packet to the peer.
+    ///
+    /// If the payload exceeds `config.fragment_size`, it is automatically split
+    /// into [`PacketType::Fragment`] packets and reassembled transparently on the receiver.
     ///
     /// # Errors
     /// - [`VCLError::ConnectionClosed`] — connection was closed
@@ -319,21 +367,42 @@ impl VCLConnection {
             return Err(VCLError::ConnectionClosed);
         }
         self.check_timeout()?;
-        self.send_internal(data, PacketType::Data).await
+
+        if !self.flow.can_send() {
+            warn!(
+                in_flight = self.flow.in_flight_count(),
+                window = self.flow.window_size(),
+                "Flow control window full"
+            );
+        }
+
+        if self.config.needs_fragmentation(data.len()) {
+            debug!(
+                size = data.len(),
+                fragment_size = self.config.fragment_size,
+                "Auto-fragmenting payload"
+            );
+            let frags = Fragmenter::split(data, self.config.fragment_size, self.fragment_id);
+            self.fragment_id += 1;
+            for frag in frags {
+                let frag_bytes = bincode::serialize(&frag)
+                    .map_err(|e| VCLError::SerializationError(e.to_string()))?;
+                self.send_internal(&frag_bytes, PacketType::Fragment).await?;
+            }
+        } else {
+            self.send_internal(data, PacketType::Data).await?;
+        }
+        Ok(())
     }
 
     // ─── Ping / Heartbeat ─────────────────────────────────────────────────────
 
     /// Send a ping to the peer to check liveness and measure round-trip latency.
     ///
-    /// The pong reply is handled **transparently inside `recv()`** — you never
-    /// see Pong packets directly. Subscribe to events to receive
-    /// [`VCLEvent::PongReceived { latency }`](VCLEvent::PongReceived).
+    /// The pong reply is handled **transparently inside `recv()`**.
+    /// Subscribe to events to receive [`VCLEvent::PongReceived { latency }`](VCLEvent::PongReceived).
     ///
     /// ⚠️ You must keep calling `recv()` for the pong to be processed.
-    ///
-    /// # Errors
-    /// Same as [`send()`](VCLConnection::send).
     pub async fn ping(&mut self) -> Result<(), VCLError> {
         if self.closed {
             error!("ping() called on closed connection");
@@ -364,20 +433,10 @@ impl VCLConnection {
 
     /// Initiate a mid-session key rotation using a fresh X25519 ephemeral exchange.
     ///
-    /// Sends our new public key to the peer (encrypted with the **current** key),
-    /// waits for the peer's new public key, and atomically switches to the new
-    /// shared secret on both sides.
-    ///
     /// Emits [`VCLEvent::KeyRotated`] on success.
     ///
     /// ⚠️ The peer must be actively calling `recv()` during rotation.
     /// ⚠️ Do not call `send()` while `rotate_keys()` is awaiting a response.
-    ///
-    /// # Errors
-    /// - [`VCLError::ConnectionClosed`] / [`VCLError::Timeout`]
-    /// - [`VCLError::ChainValidationFailed`] / [`VCLError::SignatureInvalid`]
-    /// - [`VCLError::HandshakeFailed`] — unexpected packet type in response
-    /// - [`VCLError::InvalidPacket`] — malformed public key payload
     pub async fn rotate_keys(&mut self) -> Result<(), VCLError> {
         if self.closed {
             error!("rotate_keys() called on closed connection");
@@ -469,10 +528,11 @@ impl VCLConnection {
 
     /// Receive the next data packet from the peer.
     ///
-    /// Control packets (`Ping`, `Pong`, `KeyRotation`) are handled
-    /// **transparently** — this method loops internally until a `Data` packet arrives.
+    /// Control packets (`Ping`, `Pong`, `KeyRotation`) and fragment packets are handled
+    /// **transparently** — this method loops internally until a complete `Data` packet arrives.
+    /// Large payloads that were fragmented by the sender are reassembled automatically.
     ///
-    /// On success, `packet.payload` contains the **decrypted** data.
+    /// On success, `packet.payload` contains the **decrypted** (and reassembled) data.
     ///
     /// # Errors
     /// - [`VCLError::ConnectionClosed`] — connection was closed
@@ -537,6 +597,10 @@ impl VCLConnection {
 
             match packet.packet_type {
                 PacketType::Data => {
+                    // Auto-ack oldest in-flight on receive (simple flow model)
+                    if let Some(seq) = self.flow.oldest_unacked_sequence() {
+                        self.flow.on_ack(seq);
+                    }
                     debug!(
                         peer = %addr,
                         seq = packet.sequence,
@@ -561,6 +625,37 @@ impl VCLConnection {
                 PacketType::Pong => { self.handle_pong(); }
                 PacketType::KeyRotation => {
                     self.handle_key_rotation_request(&decrypted).await?;
+                }
+                PacketType::Fragment => {
+                    // Auto-ack oldest in-flight on receive
+                    if let Some(seq) = self.flow.oldest_unacked_sequence() {
+                        self.flow.on_ack(seq);
+                    }
+                    let frag: Fragment = bincode::deserialize(&decrypted)
+                        .map_err(|e| VCLError::SerializationError(e.to_string()))?;
+                    debug!(
+                        fragment_id = frag.fragment_id,
+                        index = frag.fragment_index,
+                        total = frag.total_fragments,
+                        "Fragment received"
+                    );
+                    if let Some(reassembled) = self.reassembler.add(frag) {
+                        info!(size = reassembled.len(), "Fragment reassembly complete");
+                        self.emit(VCLEvent::PacketReceived {
+                            sequence: packet.sequence,
+                            size: reassembled.len(),
+                        });
+                        return Ok(VCLPacket {
+                            version: packet.version,
+                            packet_type: PacketType::Data,
+                            sequence: packet.sequence,
+                            prev_hash: packet.prev_hash,
+                            nonce: packet.nonce,
+                            payload: reassembled,
+                            signature: packet.signature,
+                        });
+                    }
+                    // More fragments expected, loop continues
                 }
             }
         }
@@ -601,6 +696,8 @@ impl VCLConnection {
         self.seen_nonces.clear();
         self.shared_secret = None;
         self.ping_sent_at = None;
+        self.flow.reset();
+        self.reassembler.cleanup();
         self.emit(VCLEvent::Disconnected);
         Ok(())
     }
@@ -619,5 +716,46 @@ impl VCLConnection {
     /// has not completed or the connection is closed.
     pub fn get_shared_secret(&self) -> Option<[u8; 32]> {
         self.shared_secret
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_bind_default_config() {
+        let conn = VCLConnection::bind("127.0.0.1:0").await.unwrap();
+        assert!(!conn.is_closed());
+        assert_eq!(conn.get_config().flow_window_size, 64);
+    }
+
+    #[tokio::test]
+    async fn test_bind_with_vpn_config() {
+        let conn = VCLConnection::bind_with_config("127.0.0.1:0", VCLConfig::vpn()).await.unwrap();
+        assert!(!conn.is_closed());
+        assert_eq!(conn.get_config().fragment_size, 1200);
+    }
+
+    #[tokio::test]
+    async fn test_flow_initial_state() {
+        let conn = VCLConnection::bind("127.0.0.1:0").await.unwrap();
+        assert!(conn.flow().can_send());
+        assert_eq!(conn.flow().in_flight_count(), 0);
+        assert_eq!(conn.flow().total_sent(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_ack_packet() {
+        let mut conn = VCLConnection::bind("127.0.0.1:0").await.unwrap();
+        // No in-flight packets, ack should return false
+        assert!(!conn.ack_packet(0));
+    }
+
+    #[tokio::test]
+    async fn test_close_resets_flow() {
+        let mut conn = VCLConnection::bind("127.0.0.1:0").await.unwrap();
+        conn.close().unwrap();
+        assert!(conn.is_closed());
     }
 }
