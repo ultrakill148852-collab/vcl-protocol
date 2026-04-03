@@ -208,4 +208,181 @@ impl VCLTransport {
                 let mut buf = vec![0u8; UDP_MAX_SIZE];
                 let (len, addr) = socket.recv_from(&mut buf).await?;
                 buf.truncate(len);
-                if peer_addr.is_none
+                if peer_addr.is_none() {
+                    *peer_addr = Some(addr);
+                }
+                debug!(peer = %addr, size = len, "UDP recv");
+                Ok((buf, addr))
+            }
+            VCLTransport::Tcp { stream, peer_addr } => {
+                // Read 4-byte length prefix
+                let mut header = [0u8; TCP_HEADER_SIZE];
+                stream.read_exact(&mut header).await
+                    .map_err(|e| VCLError::IoError(format!("TCP read header: {}", e)))?;
+
+                let msg_len = u32::from_be_bytes(header) as usize;
+                if msg_len == 0 || msg_len > UDP_MAX_SIZE {
+                    return Err(VCLError::InvalidPacket(format!(
+                        "TCP frame length out of range: {}",
+                        msg_len
+                    )));
+                }
+
+                // Read payload
+                let mut buf = vec![0u8; msg_len];
+                stream.read_exact(&mut buf).await
+                    .map_err(|e| VCLError::IoError(format!("TCP read body: {}", e)))?;
+
+                debug!(peer = %peer_addr, size = msg_len, "TCP recv");
+                Ok((buf, *peer_addr))
+            }
+            VCLTransport::TcpListener { .. } => Err(VCLError::InvalidPacket(
+                "recv_raw() called on TcpListener — call accept() first".to_string(),
+            )),
+        }
+    }
+
+    // ─── Info ─────────────────────────────────────────────────────────────────
+
+    /// Returns the local address this transport is bound to.
+    pub fn local_addr(&self) -> Option<SocketAddr> {
+        match self {
+            VCLTransport::Udp { socket, .. } => socket.local_addr().ok(),
+            VCLTransport::Tcp { stream, .. } => stream.local_addr().ok(),
+            VCLTransport::TcpListener { local_addr, .. } => Some(*local_addr),
+        }
+    }
+
+    /// Returns the remote peer address if known.
+    pub fn peer_addr(&self) -> Option<SocketAddr> {
+        match self {
+            VCLTransport::Udp { peer_addr, .. } => *peer_addr,
+            VCLTransport::Tcp { peer_addr, .. } => Some(*peer_addr),
+            VCLTransport::TcpListener { .. } => None,
+        }
+    }
+
+    /// Set the peer address for UDP transport.
+    ///
+    /// Has no effect on TCP (peer address is fixed at connect time).
+    pub fn set_peer_addr(&mut self, addr: SocketAddr) {
+        if let VCLTransport::Udp { peer_addr, .. } = self {
+            *peer_addr = Some(addr);
+        }
+    }
+
+    /// Returns the [`TransportMode`] of this transport.
+    pub fn mode(&self) -> TransportMode {
+        match self {
+            VCLTransport::Udp { .. } => TransportMode::Udp,
+            VCLTransport::Tcp { .. } | VCLTransport::TcpListener { .. } => TransportMode::Tcp,
+        }
+    }
+
+    /// Returns `true` if this is a TCP transport.
+    pub fn is_tcp(&self) -> bool {
+        self.mode() == TransportMode::Tcp
+    }
+
+    /// Returns `true` if this is a UDP transport.
+    pub fn is_udp(&self) -> bool {
+        self.mode() == TransportMode::Udp
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_udp_bind() {
+        let t = VCLTransport::bind_udp("127.0.0.1:0").await.unwrap();
+        assert!(t.is_udp());
+        assert!(!t.is_tcp());
+        assert!(t.local_addr().is_some());
+        assert!(t.peer_addr().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_tcp_bind() {
+        let t = VCLTransport::bind_tcp("127.0.0.1:0").await.unwrap();
+        assert!(t.is_tcp());
+        assert!(!t.is_udp());
+        assert!(t.local_addr().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_udp_send_recv() {
+        let mut server = VCLTransport::bind_udp("127.0.0.1:0").await.unwrap();
+        let server_addr = server.local_addr().unwrap();
+
+        let mut client = VCLTransport::bind_udp("127.0.0.1:0").await.unwrap();
+        client.set_peer_addr(server_addr);
+
+        client.send_raw(b"hello vcl").await.unwrap();
+        let (data, _) = server.recv_raw().await.unwrap();
+        assert_eq!(data, b"hello vcl");
+    }
+
+    #[tokio::test]
+    async fn test_tcp_send_recv() {
+        let server_listener = VCLTransport::bind_tcp("127.0.0.1:0").await.unwrap();
+        let server_addr = server_listener.local_addr().unwrap();
+
+        let (server_result, client_result) = tokio::join!(
+            server_listener.accept(),
+            VCLTransport::connect_tcp(&server_addr.to_string()),
+        );
+
+        let mut server_conn = server_result.unwrap();
+        let mut client_conn = client_result.unwrap();
+
+        client_conn.send_raw(b"hello tcp vcl").await.unwrap();
+        let (data, _) = server_conn.recv_raw().await.unwrap();
+        assert_eq!(data, b"hello tcp vcl");
+    }
+
+    #[tokio::test]
+    async fn test_tcp_multiple_messages() {
+        let server_listener = VCLTransport::bind_tcp("127.0.0.1:0").await.unwrap();
+        let server_addr = server_listener.local_addr().unwrap();
+
+        let (server_result, client_result) = tokio::join!(
+            server_listener.accept(),
+            VCLTransport::connect_tcp(&server_addr.to_string()),
+        );
+
+        let mut server_conn = server_result.unwrap();
+        let mut client_conn = client_result.unwrap();
+
+        for i in 0..5u8 {
+            let msg = vec![i; 100];
+            client_conn.send_raw(&msg).await.unwrap();
+            let (data, _) = server_conn.recv_raw().await.unwrap();
+            assert_eq!(data, msg);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_from_config_udp() {
+        let config = VCLConfig::gaming();
+        let t = VCLTransport::from_config_server("127.0.0.1:0", &config).await.unwrap();
+        assert!(t.is_udp());
+    }
+
+    #[tokio::test]
+    async fn test_from_config_tcp() {
+        let config = VCLConfig::vpn();
+        let t = VCLTransport::from_config_server("127.0.0.1:0", &config).await.unwrap();
+        assert!(t.is_tcp());
+    }
+
+    #[tokio::test]
+    async fn test_mode() {
+        let udp = VCLTransport::bind_udp("127.0.0.1:0").await.unwrap();
+        assert_eq!(udp.mode(), TransportMode::Udp);
+
+        let tcp = VCLTransport::bind_tcp("127.0.0.1:0").await.unwrap();
+        assert_eq!(tcp.mode(), TransportMode::Tcp);
+    }
+}
