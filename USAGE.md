@@ -12,7 +12,7 @@ VCL Protocol is a cryptographically chained packet transport protocol. It ensure
 - XChaCha20-Poly1305 authenticated encryption for all payloads
 - Replay protection via sequence numbers + nonce tracking
 - Session management: close(), timeout, activity tracking
-- UDP transport with Tokio async runtime
+- UDP and TCP transport with Tokio async runtime
 - **[v0.2.0]** Connection Events via async mpsc channel
 - **[v0.2.0]** Ping / Heartbeat with round-trip latency measurement
 - **[v0.2.0]** Mid-session Key Rotation via X25519
@@ -20,6 +20,10 @@ VCL Protocol is a cryptographically chained packet transport protocol. It ensure
 - **[v0.3.0]** Structured logging via `tracing`
 - **[v0.3.0]** Performance benchmarks via `criterion`
 - **[v0.3.0]** Full API docs on [docs.rs](https://docs.rs/vcl-protocol)
+- **[v0.4.0]** TCP/UDP Transport Abstraction via `VCLTransport`
+- **[v0.4.0]** Automatic packet fragmentation and reassembly
+- **[v0.4.0]** Sliding window flow control with RTT estimation
+- **[v0.4.0]** Config presets: VPN, Gaming, Streaming, Auto
 
 ---
 
@@ -28,7 +32,7 @@ VCL Protocol is a cryptographically chained packet transport protocol. It ensure
 ### Add to Cargo.toml
 ```toml
 [dependencies]
-vcl-protocol = "0.3.0"
+vcl-protocol = "0.4.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -83,86 +87,168 @@ async fn main() {
 
 ---
 
-## Connection Pool 🏊
+## Config Presets ⚙️
 
-`VCLPool` manages multiple connections under a single manager.
+`VCLConfig` controls transport, reliability, fragmentation, and flow control.
+```rust
+use vcl_protocol::connection::VCLConnection;
+use vcl_protocol::config::VCLConfig;
+
+#[tokio::main]
+async fn main() {
+    // VPN mode — TCP + reliable delivery
+    let mut conn = VCLConnection::bind_with_config(
+        "127.0.0.1:0",
+        VCLConfig::vpn()
+    ).await.unwrap();
+
+    // Gaming mode — UDP + partial reliability
+    let mut conn = VCLConnection::bind_with_config(
+        "127.0.0.1:0",
+        VCLConfig::gaming()
+    ).await.unwrap();
+
+    // Streaming mode — UDP + no retransmission
+    let mut conn = VCLConnection::bind_with_config(
+        "127.0.0.1:0",
+        VCLConfig::streaming()
+    ).await.unwrap();
+
+    // Auto mode (default) — adapts to network conditions
+    let mut conn = VCLConnection::bind("127.0.0.1:0").await.unwrap();
+}
+```
+
+### Preset Reference
+
+| Preset | Transport | Reliability | Fragment size | Window | Use case |
+|--------|-----------|-------------|---------------|--------|----------|
+| `vpn()` | TCP | Reliable | 1200B | 64 | VPN, secure comms |
+| `gaming()` | UDP | Partial | 1400B | 128 | Real-time games |
+| `streaming()` | UDP | Unreliable | 1400B | 256 | Video/audio |
+| `auto()` | Auto | Adaptive | 1200B | 64 | Unknown/mixed |
+
+### Custom Config
+```rust
+use vcl_protocol::config::{VCLConfig, TransportMode, ReliabilityMode};
+
+let config = VCLConfig {
+    transport: TransportMode::Udp,
+    reliability: ReliabilityMode::Partial,
+    max_retries: 3,
+    retry_interval_ms: 50,
+    fragment_size: 800,
+    flow_window_size: 32,
+};
+```
+
+---
+
+## Fragmentation 🧩
+
+Large payloads are automatically split and reassembled — no manual steps needed.
+```rust
+// Sender — payload > fragment_size is split automatically
+let large_data = vec![0u8; 50_000];
+client.send(&large_data).await.unwrap();
+
+// Receiver — recv() returns the complete reassembled payload
+let packet = server.recv().await.unwrap();
+assert_eq!(packet.payload.len(), 50_000);
+```
+
+Fragmentation behaviour is controlled by `VCLConfig::fragment_size` (default 1200 bytes).
+Out-of-order fragment arrival is handled automatically.
+
+---
+
+## Flow Control 🌊
+
+The sliding window flow controller is built into every connection.
+```rust
+// Inspect flow stats
+let conn = VCLConnection::bind("127.0.0.1:0").await.unwrap();
+
+println!("Can send: {}", conn.flow().can_send());
+println!("In flight: {}", conn.flow().in_flight_count());
+println!("Loss rate: {:.2}%", conn.flow().loss_rate() * 100.0);
+
+if let Some(rtt) = conn.flow().srtt() {
+    println!("RTT estimate: {:?}", rtt);
+}
+
+// Manually ack a packet (advanced use)
+conn.ack_packet(sequence_number);
+```
+
+Window size is configured via `VCLConfig::flow_window_size`.
+
+---
+
+## Transport Abstraction 🔌
+
+Use `VCLTransport` directly for low-level TCP/UDP control.
+```rust
+use vcl_protocol::transport::VCLTransport;
+use vcl_protocol::config::VCLConfig;
+
+// UDP
+let mut udp = VCLTransport::bind_udp("127.0.0.1:0").await.unwrap();
+
+// TCP server
+let listener = VCLTransport::bind_tcp("127.0.0.1:8080").await.unwrap();
+let mut conn = listener.accept().await.unwrap();
+
+// TCP client
+let mut client = VCLTransport::connect_tcp("127.0.0.1:8080").await.unwrap();
+
+// From config
+let transport = VCLTransport::from_config_server("127.0.0.1:0", &VCLConfig::vpn()).await.unwrap();
+assert!(transport.is_tcp());
+```
+
+---
+
+## Connection Pool 🏊
 ```rust
 use vcl_protocol::VCLPool;
 
 #[tokio::main]
 async fn main() {
-    // Create pool with max 10 connections
     let mut pool = VCLPool::new(10);
 
-    // Bind connections
     let id1 = pool.bind("127.0.0.1:0").await.unwrap();
     let id2 = pool.bind("127.0.0.1:0").await.unwrap();
 
-    // Connect them
     pool.connect(id1, "127.0.0.1:8080").await.unwrap();
     pool.connect(id2, "127.0.0.1:8081").await.unwrap();
 
-    // Send on specific connection
     pool.send(id1, b"Hello server 1!").await.unwrap();
     pool.send(id2, b"Hello server 2!").await.unwrap();
 
-    // Receive
     let packet = pool.recv(id1).await.unwrap();
     println!("{}", String::from_utf8_lossy(&packet.payload));
 
-    // Pool info
     println!("Active connections: {}", pool.len());
     println!("Is full: {}", pool.is_full());
-    println!("IDs: {:?}", pool.connection_ids());
 
-    // Close one or all
     pool.close(id1).unwrap();
     pool.close_all();
 }
 ```
 
-### VCLPool API
-
-| Method | Returns | Description |
-|--------|---------|-------------|
-| `new(max)` | `VCLPool` | Create pool with max connection limit |
-| `bind(addr)` | `Result<ConnectionId, VCLError>` | Bind new connection, add to pool |
-| `connect(id, addr)` | `Result<(), VCLError>` | Connect to remote peer |
-| `accept_handshake(id)` | `Result<(), VCLError>` | Accept incoming handshake |
-| `send(id, data)` | `Result<(), VCLError>` | Send data on connection |
-| `recv(id)` | `Result<VCLPacket, VCLError>` | Receive data on connection |
-| `ping(id)` | `Result<(), VCLError>` | Send ping on connection |
-| `rotate_keys(id)` | `Result<(), VCLError>` | Rotate keys on connection |
-| `close(id)` | `Result<(), VCLError>` | Close and remove connection |
-| `close_all()` | `()` | Close all connections |
-| `len()` | `usize` | Number of active connections |
-| `is_empty()` | `bool` | True if no connections |
-| `is_full()` | `bool` | True if at max capacity |
-| `contains(id)` | `bool` | True if ID exists in pool |
-| `connection_ids()` | `Vec<ConnectionId>` | List all active IDs |
-
 ---
 
 ## Logging 📝
-
-VCL Protocol uses the `tracing` crate for structured logging.
-Add one line to your `main()` to enable log output:
 ```rust
 tracing_subscriber::fmt::init();
 ```
 
-Log levels used:
-- `INFO` — handshake, connection open/close, key rotation
-- `DEBUG` — packet send/receive, ping/pong, nonce window
-- `WARN` — replay attacks, chain failures, signature errors, timeouts
+Log levels:
+- `INFO` — handshake, open/close, key rotation, fragmentation complete
+- `DEBUG` — packet send/receive, fragments, flow window
+- `WARN` — replay attacks, chain failures, flow window full, timeouts
 - `ERROR` — operations on closed connections
-
-Example output:
-```
-2024-01-01T00:00:00Z  INFO vcl_protocol::connection: VCLConnection bound addr=127.0.0.1:8080
-2024-01-01T00:00:00Z  INFO vcl_protocol::connection: Handshake complete (server) peer=127.0.0.1:12345
-2024-01-01T00:00:00Z DEBUG vcl_protocol::connection: Packet sent seq=0 size=11 packet_type=Data
-```
 
 ---
 
@@ -179,19 +265,19 @@ async fn main() {
         while let Some(event) = events.recv().await {
             match event {
                 VCLEvent::Connected =>
-                    println!("Handshake complete, secure channel ready"),
+                    println!("Handshake complete"),
                 VCLEvent::Disconnected =>
                     println!("Connection closed"),
                 VCLEvent::PacketReceived { sequence, size } =>
-                    println!("Packet #{} received ({} bytes)", sequence, size),
+                    println!("Packet #{} ({} bytes)", sequence, size),
                 VCLEvent::PingReceived =>
-                    println!("Ping received — pong sent automatically"),
+                    println!("Ping — pong sent automatically"),
                 VCLEvent::PongReceived { latency } =>
-                    println!("Round-trip latency: {:?}", latency),
+                    println!("RTT: {:?}", latency),
                 VCLEvent::KeyRotated =>
-                    println!("Key rotation complete — new shared secret active"),
+                    println!("Key rotation complete"),
                 VCLEvent::Error(msg) =>
-                    eprintln!("Internal error: {}", msg),
+                    eprintln!("Error: {}", msg),
             }
         }
     });
@@ -231,8 +317,6 @@ client.rotate_keys().await.unwrap();
 cargo bench
 ```
 
-Results (WSL2 Debian, optimized):
-
 | Operation | Time |
 |-----------|------|
 | keypair_generate | ~13 µs |
@@ -251,42 +335,46 @@ Results (WSL2 Debian, optimized):
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `bind(addr)` | `Result<Self, VCLError>` | Create connection bound to local address |
-| `connect(addr)` | `Result<(), VCLError>` | Connect to remote peer (X25519 handshake) |
-| `accept_handshake()` | `Result<(), VCLError>` | Accept incoming connection (server side) |
-| `subscribe()` | `mpsc::Receiver<VCLEvent>` | Subscribe to connection events |
-| `send(data)` | `Result<(), VCLError>` | Encrypt, sign, and send a data packet |
-| `recv()` | `Result<VCLPacket, VCLError>` | Receive, verify, decrypt next data packet |
-| `ping()` | `Result<(), VCLError>` | Send a ping; pong handled inside recv() |
-| `rotate_keys()` | `Result<(), VCLError>` | Initiate mid-session key rotation |
-| `close()` | `Result<(), VCLError>` | Gracefully close connection and clear state |
-| `is_closed()` | `bool` | Check if connection is closed |
-| `set_timeout(secs)` | `()` | Set inactivity timeout in seconds |
-| `get_timeout()` | `u64` | Get current timeout value |
-| `last_activity()` | `Instant` | Get timestamp of last send/recv |
-| `get_public_key()` | `Vec<u8>` | Get local Ed25519 public key |
-| `get_shared_secret()` | `Option<[u8; 32]>` | Get current X25519 shared secret |
-| `set_shared_key(key)` | `()` | Set pre-shared key (testing only) |
+| `bind(addr)` | `Result<Self, VCLError>` | Bind with default config |
+| `bind_with_config(addr, config)` | `Result<Self, VCLError>` | Bind with custom config |
+| `connect(addr)` | `Result<(), VCLError>` | Connect + X25519 handshake |
+| `accept_handshake()` | `Result<(), VCLError>` | Accept incoming connection |
+| `subscribe()` | `mpsc::Receiver<VCLEvent>` | Subscribe to events |
+| `send(data)` | `Result<(), VCLError>` | Send data (auto-fragments if large) |
+| `recv()` | `Result<VCLPacket, VCLError>` | Receive next data packet |
+| `ping()` | `Result<(), VCLError>` | Send ping |
+| `rotate_keys()` | `Result<(), VCLError>` | Mid-session key rotation |
+| `close()` | `Result<(), VCLError>` | Close connection |
+| `is_closed()` | `bool` | Connection closed? |
+| `set_timeout(secs)` | `()` | Set inactivity timeout |
+| `get_timeout()` | `u64` | Get timeout value |
+| `last_activity()` | `Instant` | Last send/recv timestamp |
+| `get_config()` | `&VCLConfig` | Current config |
+| `flow()` | `&FlowController` | Flow control stats |
+| `ack_packet(seq)` | `bool` | Manually ack a packet |
+| `get_public_key()` | `Vec<u8>` | Local Ed25519 public key |
+| `get_shared_secret()` | `Option<[u8; 32]>` | Current shared secret |
+| `set_shared_key(key)` | `()` | Pre-shared key (testing only) |
 
 ### VCLError
 
 | Variant | When |
 |---------|------|
 | `CryptoError(msg)` | Encryption/decryption failure |
-| `SignatureInvalid` | Ed25519 signature verification failed |
-| `InvalidKey(msg)` | Key has wrong length or format |
+| `SignatureInvalid` | Ed25519 verification failed |
+| `InvalidKey(msg)` | Key wrong length or format |
 | `ChainValidationFailed` | prev_hash mismatch |
-| `ReplayDetected(msg)` | Duplicate sequence number or nonce |
+| `ReplayDetected(msg)` | Duplicate sequence or nonce |
 | `InvalidPacket(msg)` | Malformed or unexpected packet |
-| `ConnectionClosed` | Operation on a closed connection |
-| `Timeout` | No activity for longer than timeout_secs |
-| `NoPeerAddress` | send() called before peer address is known |
-| `NoSharedSecret` | send()/recv() called before handshake |
-| `HandshakeFailed(msg)` | X25519 key exchange failed |
-| `ExpectedClientHello` | Server received wrong handshake message |
-| `ExpectedServerHello` | Client received wrong handshake message |
+| `ConnectionClosed` | Operation on closed connection |
+| `Timeout` | Inactivity timeout exceeded |
+| `NoPeerAddress` | send() before peer known |
+| `NoSharedSecret` | send()/recv() before handshake |
+| `HandshakeFailed(msg)` | X25519 exchange failed |
+| `ExpectedClientHello` | Wrong handshake message |
+| `ExpectedServerHello` | Wrong handshake message |
 | `SerializationError(msg)` | bincode failed |
-| `IoError(msg)` | UDP socket or address parse error |
+| `IoError(msg)` | Socket or address error |
 
 ---
 
@@ -302,11 +390,11 @@ Results (WSL2 Debian, optimized):
 - Tampering breaks the chain
 
 ### 3. Authentication (Ed25519)
-- Every packet is digitally signed
+- Every packet signed
 - Prevents spoofing
 
 ### 4. Encryption (XChaCha20-Poly1305)
-- All payloads encrypted with AEAD cipher
+- All payloads encrypted with AEAD
 - Unique nonce per packet
 
 ### 5. Replay Protection
@@ -325,7 +413,7 @@ Results (WSL2 Debian, optimized):
 
 ## Testing 🧪
 ```bash
-cargo test                         # All 33 tests
+cargo test                         # All 89 tests
 cargo test --lib                   # Unit tests
 cargo test --test integration_test # Integration tests
 cargo bench                        # Benchmarks
@@ -336,18 +424,21 @@ cargo run --example client         # Example client
 ---
 
 ## Project Structure 📦
-```
 vcl-protocol/
 ├── src/
 │   ├── main.rs          # Demo application
 │   ├── lib.rs           # Library entry point
-│   ├── connection.rs    # Connection API
+│   ├── connection.rs    # VCLConnection — main API
 │   ├── event.rs         # VCLEvent enum
 │   ├── pool.rs          # VCLPool — connection manager
 │   ├── packet.rs        # VCLPacket + PacketType
 │   ├── crypto.rs        # KeyPair, encrypt, decrypt
 │   ├── error.rs         # VCLError
-│   └── handshake.rs     # X25519 handshake
+│   ├── handshake.rs     # X25519 handshake
+│   ├── config.rs        # VCLConfig + presets
+│   ├── transport.rs     # VCLTransport (TCP/UDP abstraction)
+│   ├── fragment.rs      # Fragmenter + Reassembler
+│   └── flow.rs          # FlowController
 ├── benches/
 │   └── vcl_benchmarks.rs
 ├── examples/
@@ -359,7 +450,6 @@ vcl-protocol/
 ├── README.md
 ├── USAGE.md
 └── LICENSE
-```
 
 ---
 
@@ -389,12 +479,20 @@ MIT License — see LICENSE file for details.
 
 ## Changelog 🔄
 
-### v0.3.0 (Current) ✨
-- **Connection Pool** — `VCLPool` for managing multiple connections
-- **Tracing logs** — structured `INFO/DEBUG/WARN/ERROR` via `tracing`
-- **Benchmarks** — `criterion` benchmarks for all crypto and packet ops
-- **Full API docs** — complete `///` doc comments, published on [docs.rs](https://docs.rs/vcl-protocol)
-- **33/33 tests passing**
+### v0.4.0 (Current) ✨
+- **TCP/UDP Transport Abstraction** — `VCLTransport` with unified send/recv API
+- **Packet Fragmentation** — automatic split and reassembly for large payloads
+- **Flow Control** — sliding window with RTT estimation and retransmission detection
+- **Config Presets** — `VCLConfig::vpn()`, `gaming()`, `streaming()`, `auto()`
+- **`bind_with_config()`** — configure connection at bind time
+- **89/89 tests passing**
+
+### v0.3.0 ✅
+- Connection Pool (`VCLPool`)
+- Tracing logs
+- Benchmarks (criterion)
+- Full API docs on docs.rs
+- 33/33 tests passing
 
 ### v0.2.0 ✅
 - Connection Events (`VCLEvent` + `subscribe()`)
@@ -410,11 +508,6 @@ MIT License — see LICENSE file for details.
 - Replay protection
 - Session management
 - 17/17 tests passing
-
-### Planned for v0.4.0
-- VPN support (TUN/TAP interface)
-- IP packets inside VCL packets
-- Routing
 
 ---
 
