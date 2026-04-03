@@ -7,6 +7,7 @@ mod handshake;
 mod pool;
 mod config;
 mod transport;
+mod fragment;
 
 use connection::VCLConnection;
 use tokio::time::{sleep, Duration};
