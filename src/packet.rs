@@ -16,7 +16,7 @@ use crate::error::VCLError;
 /// Determines how a [`VCLPacket`] is routed by the connection layer.
 ///
 /// Users only interact with `Data` packets directly.
-/// `Ping`, `Pong`, and `KeyRotation` are handled transparently inside `recv()`.
+/// `Ping`, `Pong`, `KeyRotation`, and `Fragment` are handled transparently inside `recv()`.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub enum PacketType {
     /// A regular data packet — returned by [`VCLConnection::recv()`](crate::connection::VCLConnection::recv).
@@ -27,6 +27,9 @@ pub enum PacketType {
     Pong,
     /// Mid-session key rotation initiated by [`VCLConnection::rotate_keys()`](crate::connection::VCLConnection::rotate_keys).
     KeyRotation,
+    /// A fragment of a larger message. Payload contains a serialized [`crate::fragment::Fragment`].
+    /// Reassembly is handled transparently inside `recv()`.
+    Fragment,
 }
 
 /// A single unit of data transmission in VCL Protocol.
@@ -61,7 +64,7 @@ impl VCLPacket {
     }
 
     /// Create a packet with a specific [`PacketType`].
-    /// Used internally for Ping, Pong, and KeyRotation packets.
+    /// Used internally for Ping, Pong, KeyRotation, and Fragment packets.
     pub fn new_typed(
         sequence: u64,
         prev_hash: Vec<u8>,
@@ -80,7 +83,7 @@ impl VCLPacket {
         }
     }
 
-    /// Compute the SHA-256 hash of this packet (version + sequence + prev_hash + nonce + payload).
+    /// Compute the SHA-256 hash of this packet.
     /// Used for chain linking and signature generation.
     pub fn compute_hash(&self) -> Vec<u8> {
         let mut hasher = Sha256::new();
@@ -93,7 +96,6 @@ impl VCLPacket {
     }
 
     /// Sign this packet with an Ed25519 `private_key` (32 bytes).
-    /// Sets `self.signature` to the 64-byte signature.
     ///
     /// # Errors
     /// Returns [`VCLError::InvalidKey`] if `private_key` is not 32 bytes.
@@ -133,7 +135,6 @@ impl VCLPacket {
     }
 
     /// Returns `true` if `self.prev_hash` matches `expected_prev_hash`.
-    /// Called on every incoming packet to verify chain continuity.
     pub fn validate_chain(&self, expected_prev_hash: &[u8]) -> bool {
         self.prev_hash == expected_prev_hash
     }
@@ -218,8 +219,10 @@ mod tests {
         let ping = VCLPacket::new_typed(0, vec![0; 32], vec![], [0; 24], PacketType::Ping);
         let pong = VCLPacket::new_typed(0, vec![0; 32], vec![], [0; 24], PacketType::Pong);
         let rot  = VCLPacket::new_typed(0, vec![0; 32], vec![], [0; 24], PacketType::KeyRotation);
+        let frag = VCLPacket::new_typed(0, vec![0; 32], vec![], [0; 24], PacketType::Fragment);
         assert_eq!(ping.packet_type, PacketType::Ping);
         assert_eq!(pong.packet_type, PacketType::Pong);
         assert_eq!(rot.packet_type,  PacketType::KeyRotation);
+        assert_eq!(frag.packet_type, PacketType::Fragment);
     }
 }
