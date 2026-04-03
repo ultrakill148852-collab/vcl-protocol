@@ -39,7 +39,6 @@ use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 use tracing::{debug, warn};
 
-/// Default retransmission timeout.
 const DEFAULT_RTO_MS: u64 = 200;
 
 /// Tracks a sent-but-unacknowledged packet.
@@ -73,28 +72,18 @@ impl InFlightPacket {
 /// Tracks in-flight packets and controls send rate based on window size.
 /// Supports acknowledgements, retransmission detection, and RTT estimation.
 pub struct FlowController {
-    /// Maximum number of unacknowledged packets allowed in flight.
     window_size: usize,
-    /// Currently in-flight packets (sent, not yet acked), ordered by sequence.
     in_flight: Vec<InFlightPacket>,
-    /// Sequence numbers that have been acknowledged.
     acked: BTreeSet<u64>,
-    /// Retransmission timeout.
     rto: Duration,
-    /// Smoothed round-trip time estimate.
     srtt: Option<Duration>,
-    /// Total packets sent.
     total_sent: u64,
-    /// Total packets acknowledged.
     total_acked: u64,
-    /// Total packets detected as lost (timed out).
     total_lost: u64,
 }
 
 impl FlowController {
     /// Create a new flow controller with the given window size.
-    ///
-    /// `window_size` — maximum number of unacknowledged packets in flight.
     pub fn new(window_size: usize) -> Self {
         debug!(window_size, "FlowController created");
         FlowController {
@@ -133,7 +122,7 @@ impl FlowController {
         self.window_size
     }
 
-    /// Dynamically adjust the window size (e.g. on congestion).
+    /// Dynamically adjust the window size.
     pub fn set_window_size(&mut self, size: usize) {
         debug!(old = self.window_size, new = size, "Window size updated");
         self.window_size = size;
@@ -144,12 +133,17 @@ impl FlowController {
         self.in_flight.len()
     }
 
+    /// Returns the sequence number of the oldest unacknowledged sent packet,
+    /// or `None` if there are no packets in flight.
+    pub fn oldest_unacked_sequence(&self) -> Option<u64> {
+        self.in_flight.first().map(|p| p.sequence)
+    }
+
     // ─── Send / Ack ───────────────────────────────────────────────────────────
 
     /// Register a packet as sent.
     ///
-    /// Call this immediately after sending a packet.
-    /// Returns `false` if the window is full and the packet should not have been sent.
+    /// Returns `false` if the window is full.
     pub fn on_send(&mut self, sequence: u64) -> bool {
         if !self.can_send() {
             warn!(sequence, "on_send() called but window is full");
@@ -166,16 +160,14 @@ impl FlowController {
         true
     }
 
-    /// Register a packet as acknowledged by the receiver.
+    /// Register a packet as acknowledged.
     ///
-    /// Updates RTT estimate and removes the packet from the in-flight window.
-    /// Returns `true` if the packet was found and removed.
+    /// Updates RTT estimate. Returns `true` if the packet was found.
     pub fn on_ack(&mut self, sequence: u64) -> bool {
         if let Some(pos) = self.in_flight.iter().position(|p| p.sequence == sequence) {
             let packet = self.in_flight.remove(pos);
             let rtt = packet.sent_at.elapsed();
 
-            // Update smoothed RTT (SRTT = 7/8 * SRTT + 1/8 * RTT)
             self.srtt = Some(match self.srtt {
                 None => rtt,
                 Some(srtt) => {
@@ -185,19 +177,13 @@ impl FlowController {
                 }
             });
 
-            // Update RTO based on SRTT
             if let Some(srtt) = self.srtt {
                 self.rto = (srtt * 2).max(Duration::from_millis(50));
             }
 
             self.acked.insert(sequence);
             self.total_acked += 1;
-            debug!(
-                sequence,
-                rtt_ms = rtt.as_millis(),
-                in_flight = self.in_flight.len(),
-                "Packet acked"
-            );
+            debug!(sequence, rtt_ms = rtt.as_millis(), in_flight = self.in_flight.len(), "Packet acked");
             true
         } else {
             warn!(sequence, "on_ack() for unknown or duplicate sequence");
@@ -207,33 +193,30 @@ impl FlowController {
 
     /// Returns all in-flight packets that have exceeded the retransmission timeout.
     ///
-    /// Call periodically to detect lost packets that need retransmission.
-    /// Updates `retransmit_count` and resets `sent_at` for each timed-out packet.
+    /// Resets `sent_at` for each timed-out packet.
     pub fn timed_out_packets(&mut self) -> Vec<u64> {
         let rto = self.rto;
         let mut timed_out = Vec::new();
-
         for packet in self.in_flight.iter_mut() {
             if packet.is_timed_out(rto) {
                 warn!(
                     sequence = packet.sequence,
                     retransmit_count = packet.retransmit_count,
                     rto_ms = rto.as_millis(),
-                    "Packet timed out, needs retransmission"
+                    "Packet timed out"
                 );
                 timed_out.push(packet.sequence);
                 packet.retransmit_count += 1;
-                packet.sent_at = Instant::now(); // reset timer
+                packet.sent_at = Instant::now();
                 self.total_lost += 1;
             }
         }
-
         timed_out
     }
 
     // ─── Stats ────────────────────────────────────────────────────────────────
 
-    /// Returns the current smoothed RTT estimate, or `None` if no acks received yet.
+    /// Returns the current smoothed RTT estimate.
     pub fn srtt(&self) -> Option<Duration> {
         self.srtt
     }
@@ -259,11 +242,8 @@ impl FlowController {
     }
 
     /// Returns the packet loss rate as a value between 0.0 and 1.0.
-    /// Returns 0.0 if no packets have been sent.
     pub fn loss_rate(&self) -> f64 {
-        if self.total_sent == 0 {
-            return 0.0;
-        }
+        if self.total_sent == 0 { return 0.0; }
         self.total_lost as f64 / self.total_sent as f64
     }
 
@@ -272,7 +252,7 @@ impl FlowController {
         self.acked.contains(&sequence)
     }
 
-    /// Reset all state. Used when a connection is re-established.
+    /// Reset all state.
     pub fn reset(&mut self) {
         debug!("FlowController reset");
         self.in_flight.clear();
@@ -329,7 +309,7 @@ mod tests {
     fn test_ack_unknown_sequence() {
         let mut fc = FlowController::new(4);
         fc.on_send(0);
-        assert!(!fc.on_ack(99)); // unknown
+        assert!(!fc.on_ack(99));
         assert_eq!(fc.in_flight_count(), 1);
     }
 
@@ -384,7 +364,7 @@ mod tests {
 
     #[test]
     fn test_timed_out_packets() {
-        let mut fc = FlowController::with_rto(4, 1); // 1ms RTO
+        let mut fc = FlowController::with_rto(4, 1);
         fc.on_send(0);
         fc.on_send(1);
         std::thread::sleep(Duration::from_millis(5));
@@ -414,20 +394,27 @@ mod tests {
     fn test_on_send_full_window_returns_false() {
         let mut fc = FlowController::new(1);
         assert!(fc.on_send(0));
-        assert!(!fc.on_send(1)); // window full
+        assert!(!fc.on_send(1));
     }
 
     #[test]
     fn test_multiple_acks() {
         let mut fc = FlowController::new(10);
-        for i in 0..10 {
-            fc.on_send(i);
-        }
-        for i in 0..10 {
-            assert!(fc.on_ack(i));
-        }
+        for i in 0..10 { fc.on_send(i); }
+        for i in 0..10 { assert!(fc.on_ack(i)); }
         assert_eq!(fc.total_acked(), 10);
         assert_eq!(fc.in_flight_count(), 0);
         assert_eq!(fc.available_slots(), 10);
+    }
+
+    #[test]
+    fn test_oldest_unacked_sequence() {
+        let mut fc = FlowController::new(4);
+        assert!(fc.oldest_unacked_sequence().is_none());
+        fc.on_send(5);
+        fc.on_send(6);
+        assert_eq!(fc.oldest_unacked_sequence(), Some(5));
+        fc.on_ack(5);
+        assert_eq!(fc.oldest_unacked_sequence(), Some(6));
     }
 }
