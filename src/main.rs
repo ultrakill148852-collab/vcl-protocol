@@ -8,6 +8,7 @@ mod pool;
 mod config;
 mod transport;
 mod fragment;
+mod flow;
 
 use connection::VCLConnection;
 use tokio::time::{sleep, Duration};
