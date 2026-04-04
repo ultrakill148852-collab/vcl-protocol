@@ -35,6 +35,7 @@ pub mod config;
 pub mod transport;
 pub mod fragment;
 pub mod flow;
+pub mod metrics;
 
 pub use error::VCLError;
 pub use event::VCLEvent;
@@ -43,3 +44,4 @@ pub use config::VCLConfig;
 pub use transport::VCLTransport;
 pub use fragment::{Fragmenter, Reassembler, Fragment};
 pub use flow::FlowController;
+pub use metrics::VCLMetrics;
