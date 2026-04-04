@@ -341,7 +341,7 @@ impl VCLConnection {
             "Packet sent"
         );
 
-        self.flow.on_send(self.send_sequence);
+        self.flow.on_send(self.send_sequence, data.to_vec());
         self.send_hash = packet.compute_hash();
         self.send_sequence += 1;
         self.last_activity = Instant::now();
