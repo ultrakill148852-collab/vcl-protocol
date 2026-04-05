@@ -37,6 +37,7 @@ pub mod fragment;
 pub mod flow;
 pub mod metrics;
 pub mod tun_device;
+pub mod ip_packet;
 
 pub use error::VCLError;
 pub use event::VCLEvent;
@@ -47,3 +48,4 @@ pub use fragment::{Fragmenter, Reassembler, Fragment};
 pub use flow::FlowController;
 pub use metrics::VCLMetrics;
 pub use tun_device::{VCLTun, TunConfig, IpPacket, IpVersion};
+pub use ip_packet::{ParsedPacket, TransportProtocol, IpVersion};
