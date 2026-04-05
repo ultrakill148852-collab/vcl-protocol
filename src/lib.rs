@@ -48,4 +48,4 @@ pub use fragment::{Fragmenter, Reassembler, Fragment};
 pub use flow::FlowController;
 pub use metrics::VCLMetrics;
 pub use tun_device::{VCLTun, TunConfig, IpPacket, IpVersion};
-pub use ip_packet::{ParsedPacket, TransportProtocol, IpVersion};
+pub use ip_packet::{ParsedPacket, TransportProtocol};
