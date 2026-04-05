@@ -24,6 +24,10 @@ VCL Protocol is a cryptographically chained packet transport protocol. It ensure
 - **[v0.4.0]** Automatic packet fragmentation and reassembly
 - **[v0.4.0]** Sliding window flow control with RTT estimation
 - **[v0.4.0]** Config presets: VPN, Gaming, Streaming, Auto
+- **[v0.5.0]** WebSocket transport via `tokio-tungstenite`
+- **[v0.5.0]** AIMD congestion control with slow start
+- **[v0.5.0]** Automatic retransmission with exponential backoff
+- **[v0.5.0]** `VCLMetrics` API for performance monitoring
 
 ---
 
@@ -32,7 +36,7 @@ VCL Protocol is a cryptographically chained packet transport protocol. It ensure
 ### Add to Cargo.toml
 ```toml
 [dependencies]
-vcl-protocol = "0.4.0"
+vcl-protocol = "0.5.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -144,6 +148,100 @@ let config = VCLConfig {
 
 ---
 
+## WebSocket Transport 🌐
+
+Browser-compatible transport that works through HTTP proxies and firewalls.
+```rust
+use vcl_protocol::transport::VCLTransport;
+
+#[tokio::main]
+async fn main() {
+    // Server side
+    let listener = VCLTransport::bind_ws("127.0.0.1:8080").await.unwrap();
+    let mut server_conn = listener.accept().await.unwrap();
+
+    // Client side
+    let mut client = VCLTransport::connect_ws("ws://127.0.0.1:8080").await.unwrap();
+
+    client.send_raw(b"hello from browser").await.unwrap();
+    let (data, _) = server_conn.recv_raw().await.unwrap();
+    println!("{}", String::from_utf8_lossy(&data));
+}
+```
+
+WebSocket transport uses binary frames. Ping, pong, text, and close frames are handled automatically — only binary data is exposed to the user.
+
+---
+
+## Retransmission & Congestion Control 📉
+
+Built into `FlowController` — no extra setup needed. Retransmission requests are returned by `timed_out_packets()` with the original data payload ready to resend.
+```rust
+use vcl_protocol::flow::FlowController;
+
+let mut fc = FlowController::new(64);
+
+// Register sent packet with its data
+fc.on_send(0, b"important data".to_vec());
+
+// Check for timed-out packets periodically
+let requests = fc.timed_out_packets();
+for req in requests {
+    println!("Retransmit seq={} attempt={}", req.sequence, req.retransmit_count);
+    // resend req.data here
+}
+
+// AIMD stats
+println!("cwnd: {:.1}", fc.cwnd());
+println!("in slow start: {}", fc.in_slow_start());
+println!("total retransmits: {}", fc.total_retransmits());
+```
+
+AIMD algorithm:
+- **Slow start:** cwnd grows by 1 per ack until ssthresh
+- **Congestion avoidance:** cwnd grows by 1/cwnd per ack
+- **On loss:** cwnd reset to 1, ssthresh halved, RTO doubled
+
+---
+
+## Metrics API 📊
+
+`VCLMetrics` collects performance and health statistics for a connection or pool.
+```rust
+use vcl_protocol::metrics::VCLMetrics;
+use std::time::Duration;
+
+let mut m = VCLMetrics::new();
+
+// Record events
+m.record_sent(1024);
+m.record_received(512);
+m.record_retransmit();
+m.record_rtt_sample(Duration::from_millis(42));
+m.record_cwnd(32);
+m.record_handshake();
+m.record_key_rotation();
+
+// Read stats
+println!("Loss rate:    {:.2}%", m.loss_rate() * 100.0);
+println!("Avg RTT:      {:?}", m.avg_rtt());
+println!("Min RTT:      {:?}", m.min_rtt());
+println!("Max RTT:      {:?}", m.max_rtt());
+println!("Current cwnd: {:?}", m.current_cwnd());
+println!("Throughput:   {:.0} B/s sent", m.throughput_sent_bps());
+println!("Uptime:       {:?}", m.uptime());
+println!("Total dropped:{}", m.total_dropped());
+```
+
+### Pool-level aggregation
+```rust
+let mut pool_metrics = VCLMetrics::new();
+let conn_metrics = VCLMetrics::new(); // from individual connection
+pool_metrics.merge(&conn_metrics);
+```
+
+---
+
 ## Fragmentation 🧩
 
 Large payloads are automatically split and reassembled — no manual steps needed.
@@ -166,28 +264,31 @@ Out-of-order fragment arrival is handled automatically.
 
 The sliding window flow controller is built into every connection.
 ```rust
-// Inspect flow stats
 let conn = VCLConnection::bind("127.0.0.1:0").await.unwrap();
 
-println!("Can send: {}", conn.flow().can_send());
-println!("In flight: {}", conn.flow().in_flight_count());
-println!("Loss rate: {:.2}%", conn.flow().loss_rate() * 100.0);
+println!("Can send:      {}", conn.flow().can_send());
+println!("In flight:     {}", conn.flow().in_flight_count());
+println!("cwnd:          {:.1}", conn.flow().cwnd());
+println!("Effective win: {}", conn.flow().effective_window());
+println!("Loss rate:     {:.2}%", conn.flow().loss_rate() * 100.0);
+println!("Retransmits:   {}", conn.flow().total_retransmits());
 
 if let Some(rtt) = conn.flow().srtt() {
-    println!("RTT estimate: {:?}", rtt);
+    println!("SRTT: {:?}", rtt);
+}
+if let Some(rttvar) = conn.flow().rttvar() {
+    println!("RTTVAR: {:?}", rttvar);
 }
 
 // Manually ack a packet (advanced use)
 conn.ack_packet(sequence_number);
 ```
 
-Window size is configured via `VCLConfig::flow_window_size`.
-
 ---
 
 ## Transport Abstraction 🔌
 
-Use `VCLTransport` directly for low-level TCP/UDP control.
+Use `VCLTransport` directly for low-level TCP/UDP/WebSocket control.
 ```rust
 use vcl_protocol::transport::VCLTransport;
 use vcl_protocol::config::VCLConfig;
@@ -202,9 +303,17 @@ let mut conn = listener.accept().await.unwrap();
 // TCP client
 let mut client = VCLTransport::connect_tcp("127.0.0.1:8080").await.unwrap();
 
+// WebSocket server
+let ws_listener = VCLTransport::bind_ws("127.0.0.1:8081").await.unwrap();
+let mut ws_conn = ws_listener.accept().await.unwrap();
+
+// WebSocket client
+let mut ws_client = VCLTransport::connect_ws("ws://127.0.0.1:8081").await.unwrap();
+
 // From config
 let transport = VCLTransport::from_config_server("127.0.0.1:0", &VCLConfig::vpn()).await.unwrap();
 assert!(transport.is_tcp());
+assert!(ws_client.is_websocket());
 ```
 
 ---
@@ -245,9 +354,9 @@ tracing_subscriber::fmt::init();
 ```
 
 Log levels:
-- `INFO` — handshake, open/close, key rotation, fragmentation complete
-- `DEBUG` — packet send/receive, fragments, flow window
-- `WARN` — replay attacks, chain failures, flow window full, timeouts
+- `INFO` — handshake, open/close, key rotation, fragmentation complete, slow start exit
+- `DEBUG` — packet send/receive, fragments, flow window, AIMD cwnd changes
+- `WARN` — replay attacks, chain failures, flow window full, timeouts, retransmissions, AIMD decrease
 - `ERROR` — operations on closed connections
 
 ---
@@ -350,7 +459,7 @@ cargo bench
 | `get_timeout()` | `u64` | Get timeout value |
 | `last_activity()` | `Instant` | Last send/recv timestamp |
 | `get_config()` | `&VCLConfig` | Current config |
-| `flow()` | `&FlowController` | Flow control stats |
+| `flow()` | `&FlowController` | Flow control + congestion stats |
 | `ack_packet(seq)` | `bool` | Manually ack a packet |
 | `get_public_key()` | `Vec<u8>` | Local Ed25519 public key |
 | `get_shared_secret()` | `Option<[u8; 32]>` | Current shared secret |
@@ -374,7 +483,7 @@ cargo bench
 | `ExpectedClientHello` | Wrong handshake message |
 | `ExpectedServerHello` | Wrong handshake message |
 | `SerializationError(msg)` | bincode failed |
-| `IoError(msg)` | Socket or address error |
+| `IoError(msg)` | Socket, WebSocket, or address error |
 
 ---
 
@@ -413,7 +522,7 @@ cargo bench
 
 ## Testing 🧪
 ```bash
-cargo test                         # All 89 tests
+cargo test                         # All 113 tests
 cargo test --lib                   # Unit tests
 cargo test --test integration_test # Integration tests
 cargo bench                        # Benchmarks
@@ -424,6 +533,7 @@ cargo run --example client         # Example client
 ---
 
 ## Project Structure 📦
+```text
 vcl-protocol/
 ├── src/
 │   ├── main.rs          # Demo application
@@ -436,9 +546,10 @@ vcl-protocol/
 │   ├── error.rs         # VCLError
 │   ├── handshake.rs     # X25519 handshake
 │   ├── config.rs        # VCLConfig + presets
-│   ├── transport.rs     # VCLTransport (TCP/UDP abstraction)
+│   ├── transport.rs     # VCLTransport (UDP/TCP/WebSocket)
 │   ├── fragment.rs      # Fragmenter + Reassembler
-│   └── flow.rs          # FlowController
+│   ├── flow.rs          # FlowController + AIMD + Retransmission
+│   └── metrics.rs       # VCLMetrics
 ├── benches/
 │   └── vcl_benchmarks.rs
 ├── examples/
@@ -450,6 +561,7 @@ vcl-protocol/
 ├── README.md
 ├── USAGE.md
 └── LICENSE
+```
 
 ---
 
@@ -479,13 +591,21 @@ MIT License — see LICENSE file for details.
 
 ## Changelog 🔄
 
-### v0.4.0 (Current) ✨
-- **TCP/UDP Transport Abstraction** — `VCLTransport` with unified send/recv API
-- **Packet Fragmentation** — automatic split and reassembly for large payloads
-- **Flow Control** — sliding window with RTT estimation and retransmission detection
-- **Config Presets** — `VCLConfig::vpn()`, `gaming()`, `streaming()`, `auto()`
-- **`bind_with_config()`** — configure connection at bind time
-- **89/89 tests passing**
+### v0.5.0 (Current) ✨
+- **WebSocket Transport** — `bind_ws()`, `connect_ws()`, binary frames via `tokio-tungstenite`
+- **Congestion Control (AIMD)** — slow start + congestion avoidance + multiplicative decrease
+- **Retransmission** — `RetransmitRequest` with data payload, exponential RTO backoff
+- **RFC 6298 RTT** — SRTT + RTTVAR estimation, dynamic RTO
+- **Metrics API** — `VCLMetrics` with merge() for pool aggregation
+- **113/113 tests passing**
+
+### v0.4.0 ✅
+- TCP/UDP Transport Abstraction (`VCLTransport`)
+- Packet Fragmentation (Fragmenter + Reassembler)
+- Flow Control (sliding window)
+- Config Presets (`VCLConfig::vpn()`, `gaming()`, `streaming()`, `auto()`)
+- `bind_with_config()`
+- 89/89 tests passing
 
 ### v0.3.0 ✅
 - Connection Pool (`VCLPool`)
