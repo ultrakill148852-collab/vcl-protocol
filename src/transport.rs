@@ -1,7 +1,7 @@
 //! # VCL Transport Abstraction
 //!
-//! Provides a unified [`VCLTransport`] enum that abstracts over TCP and UDP sockets.
-//! This allows [`VCLConnection`] to work with either transport transparently.
+//! Provides a unified [`VCLTransport`] enum that abstracts over TCP, UDP, and WebSocket.
+//! This allows [`VCLConnection`] to work with any transport transparently.
 //!
 //! ## Example
 //!
@@ -15,6 +15,9 @@
 //!
 //!     // TCP transport (server)
 //!     let tcp = VCLTransport::bind_tcp("127.0.0.1:8081").await.unwrap();
+//!
+//!     // WebSocket transport (server)
+//!     let ws = VCLTransport::bind_ws("127.0.0.1:8082").await.unwrap();
 //! }
 //! ```
 //!
@@ -24,6 +27,12 @@ use crate::error::VCLError;
 use crate::config::{TransportMode, VCLConfig};
 use tokio::net::{UdpSocket, TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_tungstenite::{
+    accept_async, connect_async,
+    tungstenite::Message,
+    WebSocketStream, MaybeTlsStream,
+};
+use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
 use tracing::{debug, info};
 
@@ -32,8 +41,12 @@ const TCP_HEADER_SIZE: usize = 4;
 
 /// Unified transport layer for VCL Protocol.
 ///
-/// Abstracts over TCP and UDP sockets so that higher-level code
+/// Abstracts over UDP, TCP, and WebSocket so that higher-level code
 /// does not need to care about the underlying protocol.
+///
+/// - **UDP** — low latency, no connection state, best for gaming/streaming
+/// - **TCP** — reliable, ordered, best for VPN/file transfer
+/// - **WebSocket** — browser-compatible, works through HTTP proxies
 pub enum VCLTransport {
     /// UDP transport backed by [`tokio::net::UdpSocket`].
     Udp {
@@ -50,6 +63,21 @@ pub enum VCLTransport {
         listener: TcpListener,
         local_addr: SocketAddr,
     },
+    /// WebSocket client connection.
+    WebSocketClient {
+        stream: WebSocketStream<MaybeTlsStream<TcpStream>>,
+        peer_addr: String,
+    },
+    /// WebSocket server connection (accepted from a listener).
+    WebSocketServer {
+        stream: WebSocketStream<TcpStream>,
+        peer_addr: SocketAddr,
+    },
+    /// WebSocket listener — server side, waiting for incoming WS connections.
+    WebSocketListener {
+        listener: TcpListener,
+        local_addr: SocketAddr,
+    },
 }
 
 impl VCLTransport {
@@ -62,10 +90,7 @@ impl VCLTransport {
             .map(|a| a.to_string())
             .unwrap_or_else(|_| addr.to_string());
         info!(addr = %local, "UDP transport bound");
-        Ok(VCLTransport::Udp {
-            socket,
-            peer_addr: None,
-        })
+        Ok(VCLTransport::Udp { socket, peer_addr: None })
     }
 
     /// Bind a TCP listener to a local address (server side).
@@ -85,13 +110,55 @@ impl VCLTransport {
         Ok(VCLTransport::Tcp { stream, peer_addr })
     }
 
-    /// Accept an incoming TCP connection (server side).
+    /// Bind a WebSocket listener to a local address (server side).
+    ///
+    /// Call [`accept()`](VCLTransport::accept) to wait for an incoming WS connection.
+    pub async fn bind_ws(addr: &str) -> Result<Self, VCLError> {
+        let listener = TcpListener::bind(addr).await?;
+        let local_addr = listener.local_addr()?;
+        info!(addr = %local_addr, "WebSocket transport bound");
+        Ok(VCLTransport::WebSocketListener { listener, local_addr })
+    }
+
+    /// Connect a WebSocket client to a remote URL.
+    ///
+    /// `url` should be in the form `ws://host:port/path` or `wss://host:port/path`.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use vcl_protocol::transport::VCLTransport;
+    ///
+    /// # async fn example() {
+    /// let ws = VCLTransport::connect_ws("ws://127.0.0.1:8082").await.unwrap();
+    /// # }
+    /// ```
+    pub async fn connect_ws(url: &str) -> Result<Self, VCLError> {
+        let peer_addr = url.to_string();
+        let (stream, _response) = connect_async(url)
+            .await
+            .map_err(|e| VCLError::IoError(format!("WebSocket connect failed: {}", e)))?;
+        info!(url = %url, "WebSocket transport connected");
+        Ok(VCLTransport::WebSocketClient { stream, peer_addr })
+    }
+
+    /// Accept an incoming connection (server side).
+    ///
+    /// Works for both [`TcpListener`](VCLTransport::TcpListener) and
+    /// [`WebSocketListener`](VCLTransport::WebSocketListener).
     pub async fn accept(&self) -> Result<Self, VCLError> {
         match self {
             VCLTransport::TcpListener { listener, .. } => {
                 let (stream, peer_addr) = listener.accept().await?;
                 info!(peer = %peer_addr, "TCP connection accepted");
                 Ok(VCLTransport::Tcp { stream, peer_addr })
+            }
+            VCLTransport::WebSocketListener { listener, .. } => {
+                let (tcp_stream, peer_addr) = listener.accept().await?;
+                let ws_stream = accept_async(tcp_stream)
+                    .await
+                    .map_err(|e| VCLError::IoError(format!("WebSocket handshake failed: {}", e)))?;
+                info!(peer = %peer_addr, "WebSocket connection accepted");
+                Ok(VCLTransport::WebSocketServer { stream: ws_stream, peer_addr })
             }
             _ => Err(VCLError::InvalidPacket(
                 "accept() called on non-listener transport".to_string(),
@@ -131,6 +198,10 @@ impl VCLTransport {
     // ─── Send / Recv ──────────────────────────────────────────────────────────
 
     /// Send raw bytes to the peer.
+    ///
+    /// - UDP: single datagram to `peer_addr`
+    /// - TCP: 4-byte length prefix + data
+    /// - WebSocket: binary message
     pub async fn send_raw(&mut self, data: &[u8]) -> Result<(), VCLError> {
         match self {
             VCLTransport::Udp { socket, peer_addr } => {
@@ -148,13 +219,37 @@ impl VCLTransport {
                 debug!(peer = %peer_addr, size = data.len(), "TCP send");
                 Ok(())
             }
-            VCLTransport::TcpListener { .. } => Err(VCLError::InvalidPacket(
-                "send_raw() called on TcpListener — call accept() first".to_string(),
-            )),
+            VCLTransport::WebSocketClient { stream, peer_addr } => {
+                stream
+                    .send(Message::Binary(data.to_vec()))
+                    .await
+                    .map_err(|e| VCLError::IoError(format!("WebSocket send failed: {}", e)))?;
+                debug!(peer = %peer_addr, size = data.len(), "WebSocket client send");
+                Ok(())
+            }
+            VCLTransport::WebSocketServer { stream, peer_addr } => {
+                stream
+                    .send(Message::Binary(data.to_vec()))
+                    .await
+                    .map_err(|e| VCLError::IoError(format!("WebSocket send failed: {}", e)))?;
+                debug!(peer = %peer_addr, size = data.len(), "WebSocket server send");
+                Ok(())
+            }
+            VCLTransport::TcpListener { .. } | VCLTransport::WebSocketListener { .. } => {
+                Err(VCLError::InvalidPacket(
+                    "send_raw() called on listener — call accept() first".to_string(),
+                ))
+            }
         }
     }
 
     /// Receive raw bytes from the peer.
+    ///
+    /// - UDP: single datagram, sets peer address on first receive
+    /// - TCP: reads framed message (4-byte length prefix + data)
+    /// - WebSocket: reads next binary message (skips ping/pong/text frames)
+    ///
+    /// Returns `(data, sender_addr_string)`.
     pub async fn recv_raw(&mut self) -> Result<(Vec<u8>, SocketAddr), VCLError> {
         match self {
             VCLTransport::Udp { socket, peer_addr } => {
@@ -171,25 +266,62 @@ impl VCLTransport {
                 let mut header = [0u8; TCP_HEADER_SIZE];
                 stream.read_exact(&mut header).await
                     .map_err(|e| VCLError::IoError(format!("TCP read header: {}", e)))?;
-
                 let msg_len = u32::from_be_bytes(header) as usize;
                 if msg_len == 0 || msg_len > UDP_MAX_SIZE {
                     return Err(VCLError::InvalidPacket(format!(
-                        "TCP frame length out of range: {}",
-                        msg_len
+                        "TCP frame length out of range: {}", msg_len
                     )));
                 }
-
                 let mut buf = vec![0u8; msg_len];
                 stream.read_exact(&mut buf).await
                     .map_err(|e| VCLError::IoError(format!("TCP read body: {}", e)))?;
-
                 debug!(peer = %peer_addr, size = msg_len, "TCP recv");
                 Ok((buf, *peer_addr))
             }
-            VCLTransport::TcpListener { .. } => Err(VCLError::InvalidPacket(
-                "recv_raw() called on TcpListener — call accept() first".to_string(),
-            )),
+            VCLTransport::WebSocketClient { stream, peer_addr } => {
+                loop {
+                    let msg = stream.next().await
+                        .ok_or_else(|| VCLError::IoError("WebSocket stream closed".to_string()))?
+                        .map_err(|e| VCLError::IoError(format!("WebSocket recv failed: {}", e)))?;
+                    match msg {
+                        Message::Binary(data) => {
+                            let size = data.len();
+                            debug!(peer = %peer_addr, size, "WebSocket client recv");
+                            // WebSocket client has no SocketAddr — use 0.0.0.0:0 as placeholder
+                            let placeholder: SocketAddr = "0.0.0.0:0".parse().unwrap();
+                            return Ok((data, placeholder));
+                        }
+                        Message::Close(_) => {
+                            return Err(VCLError::IoError("WebSocket connection closed".to_string()));
+                        }
+                        // Skip ping, pong, text frames
+                        _ => continue,
+                    }
+                }
+            }
+            VCLTransport::WebSocketServer { stream, peer_addr } => {
+                loop {
+                    let msg = stream.next().await
+                        .ok_or_else(|| VCLError::IoError("WebSocket stream closed".to_string()))?
+                        .map_err(|e| VCLError::IoError(format!("WebSocket recv failed: {}", e)))?;
+                    match msg {
+                        Message::Binary(data) => {
+                            let size = data.len();
+                            debug!(peer = %peer_addr, size, "WebSocket server recv");
+                            return Ok((data, *peer_addr));
+                        }
+                        Message::Close(_) => {
+                            return Err(VCLError::IoError("WebSocket connection closed".to_string()));
+                        }
+                        _ => continue,
+                    }
+                }
+            }
+            VCLTransport::TcpListener { .. } | VCLTransport::WebSocketListener { .. } => {
+                Err(VCLError::InvalidPacket(
+                    "recv_raw() called on listener — call accept() first".to_string(),
+                ))
+            }
         }
     }
 
@@ -198,18 +330,24 @@ impl VCLTransport {
     /// Returns the local address this transport is bound to.
     pub fn local_addr(&self) -> Option<SocketAddr> {
         match self {
-            VCLTransport::Udp { socket, .. } => socket.local_addr().ok(),
-            VCLTransport::Tcp { stream, .. } => stream.local_addr().ok(),
+            VCLTransport::Udp { socket, .. }          => socket.local_addr().ok(),
+            VCLTransport::Tcp { stream, .. }           => stream.local_addr().ok(),
             VCLTransport::TcpListener { local_addr, .. } => Some(*local_addr),
+            VCLTransport::WebSocketListener { local_addr, .. } => Some(*local_addr),
+            VCLTransport::WebSocketServer { peer_addr, .. } => Some(*peer_addr),
+            VCLTransport::WebSocketClient { .. }       => None,
         }
     }
 
     /// Returns the remote peer address if known.
     pub fn peer_addr(&self) -> Option<SocketAddr> {
         match self {
-            VCLTransport::Udp { peer_addr, .. } => *peer_addr,
-            VCLTransport::Tcp { peer_addr, .. } => Some(*peer_addr),
-            VCLTransport::TcpListener { .. } => None,
+            VCLTransport::Udp { peer_addr, .. }        => *peer_addr,
+            VCLTransport::Tcp { peer_addr, .. }        => Some(*peer_addr),
+            VCLTransport::WebSocketServer { peer_addr, .. } => Some(*peer_addr),
+            VCLTransport::TcpListener { .. }
+            | VCLTransport::WebSocketListener { .. }
+            | VCLTransport::WebSocketClient { .. }     => None,
         }
     }
 
@@ -224,18 +362,35 @@ impl VCLTransport {
     pub fn mode(&self) -> TransportMode {
         match self {
             VCLTransport::Udp { .. } => TransportMode::Udp,
-            VCLTransport::Tcp { .. } | VCLTransport::TcpListener { .. } => TransportMode::Tcp,
+            VCLTransport::Tcp { .. }
+            | VCLTransport::TcpListener { .. } => TransportMode::Tcp,
+            VCLTransport::WebSocketClient { .. }
+            | VCLTransport::WebSocketServer { .. }
+            | VCLTransport::WebSocketListener { .. } => TransportMode::Tcp,
         }
     }
 
     /// Returns `true` if this is a TCP transport.
     pub fn is_tcp(&self) -> bool {
-        self.mode() == TransportMode::Tcp
+        matches!(
+            self,
+            VCLTransport::Tcp { .. } | VCLTransport::TcpListener { .. }
+        )
     }
 
     /// Returns `true` if this is a UDP transport.
     pub fn is_udp(&self) -> bool {
-        self.mode() == TransportMode::Udp
+        matches!(self, VCLTransport::Udp { .. })
+    }
+
+    /// Returns `true` if this is a WebSocket transport.
+    pub fn is_websocket(&self) -> bool {
+        matches!(
+            self,
+            VCLTransport::WebSocketClient { .. }
+                | VCLTransport::WebSocketServer { .. }
+                | VCLTransport::WebSocketListener { .. }
+        )
     }
 }
 
@@ -248,6 +403,7 @@ mod tests {
         let t = VCLTransport::bind_udp("127.0.0.1:0").await.unwrap();
         assert!(t.is_udp());
         assert!(!t.is_tcp());
+        assert!(!t.is_websocket());
         assert!(t.local_addr().is_some());
         assert!(t.peer_addr().is_none());
     }
@@ -257,6 +413,16 @@ mod tests {
         let t = VCLTransport::bind_tcp("127.0.0.1:0").await.unwrap();
         assert!(t.is_tcp());
         assert!(!t.is_udp());
+        assert!(!t.is_websocket());
+        assert!(t.local_addr().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_ws_bind() {
+        let t = VCLTransport::bind_ws("127.0.0.1:0").await.unwrap();
+        assert!(t.is_websocket());
+        assert!(!t.is_udp());
+        assert!(!t.is_tcp());
         assert!(t.local_addr().is_some());
     }
 
@@ -264,10 +430,8 @@ mod tests {
     async fn test_udp_send_recv() {
         let mut server = VCLTransport::bind_udp("127.0.0.1:0").await.unwrap();
         let server_addr = server.local_addr().unwrap();
-
         let mut client = VCLTransport::bind_udp("127.0.0.1:0").await.unwrap();
         client.set_peer_addr(server_addr);
-
         client.send_raw(b"hello vcl").await.unwrap();
         let (data, _) = server.recv_raw().await.unwrap();
         assert_eq!(data, b"hello vcl");
@@ -277,15 +441,12 @@ mod tests {
     async fn test_tcp_send_recv() {
         let server_listener = VCLTransport::bind_tcp("127.0.0.1:0").await.unwrap();
         let server_addr = server_listener.local_addr().unwrap().to_string();
-
         let (server_result, client_result) = tokio::join!(
             server_listener.accept(),
             VCLTransport::connect_tcp(&server_addr),
         );
-
         let mut server_conn = server_result.unwrap();
         let mut client_conn = client_result.unwrap();
-
         client_conn.send_raw(b"hello tcp vcl").await.unwrap();
         let (data, _) = server_conn.recv_raw().await.unwrap();
         assert_eq!(data, b"hello tcp vcl");
@@ -295,17 +456,47 @@ mod tests {
     async fn test_tcp_multiple_messages() {
         let server_listener = VCLTransport::bind_tcp("127.0.0.1:0").await.unwrap();
         let server_addr = server_listener.local_addr().unwrap().to_string();
-
         let (server_result, client_result) = tokio::join!(
             server_listener.accept(),
             VCLTransport::connect_tcp(&server_addr),
         );
-
         let mut server_conn = server_result.unwrap();
         let mut client_conn = client_result.unwrap();
-
         for i in 0..5u8 {
             let msg = vec![i; 100];
+            client_conn.send_raw(&msg).await.unwrap();
+            let (data, _) = server_conn.recv_raw().await.unwrap();
+            assert_eq!(data, msg);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ws_send_recv() {
+        let server_listener = VCLTransport::bind_ws("127.0.0.1:0").await.unwrap();
+        let server_addr = format!("ws://{}", server_listener.local_addr().unwrap());
+        let (server_result, client_result) = tokio::join!(
+            server_listener.accept(),
+            VCLTransport::connect_ws(&server_addr),
+        );
+        let mut server_conn = server_result.unwrap();
+        let mut client_conn = client_result.unwrap();
+        client_conn.send_raw(b"hello websocket vcl").await.unwrap();
+        let (data, _) = server_conn.recv_raw().await.unwrap();
+        assert_eq!(data, b"hello websocket vcl");
+    }
+
+    #[tokio::test]
+    async fn test_ws_multiple_messages() {
+        let server_listener = VCLTransport::bind_ws("127.0.0.1:0").await.unwrap();
+        let server_addr = format!("ws://{}", server_listener.local_addr().unwrap());
+        let (server_result, client_result) = tokio::join!(
+            server_listener.accept(),
+            VCLTransport::connect_ws(&server_addr),
+        );
+        let mut server_conn = server_result.unwrap();
+        let mut client_conn = client_result.unwrap();
+        for i in 0..5u8 {
+            let msg = vec![i; 200];
             client_conn.send_raw(&msg).await.unwrap();
             let (data, _) = server_conn.recv_raw().await.unwrap();
             assert_eq!(data, msg);
@@ -330,9 +521,10 @@ mod tests {
     async fn test_mode() {
         let udp = VCLTransport::bind_udp("127.0.0.1:0").await.unwrap();
         assert_eq!(udp.mode(), TransportMode::Udp);
-
         let tcp = VCLTransport::bind_tcp("127.0.0.1:0").await.unwrap();
         assert_eq!(tcp.mode(), TransportMode::Tcp);
+        let ws = VCLTransport::bind_ws("127.0.0.1:0").await.unwrap();
+        assert_eq!(ws.mode(), TransportMode::Tcp);
     }
 
     #[tokio::test]
