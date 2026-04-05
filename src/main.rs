@@ -10,6 +10,7 @@ mod transport;
 mod fragment;
 mod flow;
 mod metrics;
+mod tun_device;
 
 use connection::VCLConnection;
 use tokio::time::{sleep, Duration};
