@@ -39,6 +39,7 @@ pub mod metrics;
 pub mod tun_device;
 pub mod ip_packet;
 pub mod multipath;
+pub mod mtu;
 
 pub use error::VCLError;
 pub use event::VCLEvent;
@@ -51,3 +52,4 @@ pub use metrics::VCLMetrics;
 pub use tun_device::{VCLTun, TunConfig, IpPacket, IpVersion};
 pub use ip_packet::{ParsedPacket, TransportProtocol};
 pub use multipath::{MultipathSender, MultipathReceiver, PathInfo, SchedulingPolicy};
+pub use mtu::{MtuNegotiator, MtuConfig, PathMtu, MtuState};
