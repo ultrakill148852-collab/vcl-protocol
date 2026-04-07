@@ -15,6 +15,7 @@ mod ip_packet;
 mod multipath;
 mod mtu;
 mod keepalive;
+mod reconnect;
 
 use connection::VCLConnection;
 use tokio::time::{sleep, Duration};
