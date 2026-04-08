@@ -43,6 +43,7 @@ pub mod mtu;
 pub mod keepalive;
 pub mod reconnect;
 pub mod dns;
+pub mod obfuscation;
 
 pub use error::VCLError;
 pub use event::VCLEvent;
@@ -59,3 +60,4 @@ pub use mtu::{MtuNegotiator, MtuConfig, PathMtu, MtuState};
 pub use keepalive::{KeepaliveManager, KeepaliveConfig, KeepaliveAction, KeepalivePreset};
 pub use reconnect::{ReconnectManager, ReconnectConfig, ReconnectState};
 pub use dns::{DnsFilter, DnsConfig, DnsAction, DnsPacket};
+pub use obfuscation::{Obfuscator, ObfuscationConfig, ObfuscationMode};
