@@ -16,6 +16,7 @@ mod multipath;
 mod mtu;
 mod keepalive;
 mod reconnect;
+mod dns;
 
 use connection::VCLConnection;
 use tokio::time::{sleep, Duration};
