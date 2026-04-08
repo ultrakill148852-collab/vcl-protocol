@@ -17,6 +17,7 @@ mod mtu;
 mod keepalive;
 mod reconnect;
 mod dns;
+mod obfuscation;
 
 use connection::VCLConnection;
 use tokio::time::{sleep, Duration};
