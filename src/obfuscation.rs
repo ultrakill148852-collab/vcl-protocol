@@ -28,7 +28,7 @@
 //! ```
 
 use crate::error::VCLError;
-use tracing::{debug, trace};
+use tracing::trace;
 
 /// Magic bytes that look like a TLS 1.3 record header.
 /// Content-Type: Application Data (23), Version: TLS 1.2 compat (0x0303)
@@ -109,7 +109,7 @@ impl ObfuscationConfig {
             mode: ObfuscationMode::TlsMimicry,
             jitter_max_ms: 5,
             min_packet_size: 0,
-            max_packet_size: 16384, // TLS max record size
+            max_packet_size: 16384,
             xor_key: 0x5A,
         }
     }
@@ -256,7 +256,6 @@ impl Obfuscator {
         if self.config.jitter_max_ms == 0 {
             return 0;
         }
-        // Deterministic pseudo-random based on counter
         let r = (self.counter.wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407)) >> 33;
         r % (self.config.jitter_max_ms + 1)
@@ -265,27 +264,23 @@ impl Obfuscator {
     // ─── Padding ──────────────────────────────────────────────────────────────
 
     fn apply_padding(&self, data: &[u8]) -> Vec<u8> {
-        // Format: [1 byte: padding_len][data][padding_bytes]
         let target = self.config.min_packet_size;
         let padding_needed = if data.len() + 1 < target {
             target - data.len() - 1
         } else {
-            // Add small pseudo-random padding based on counter
-            (self.counter as usize % 16)
+            self.counter as usize % 16
         };
         let padding_len = padding_needed.min(255);
 
         let mut result = Vec::with_capacity(1 + data.len() + padding_len);
         result.push(padding_len as u8);
 
-        // XOR scramble if enabled
         if self.config.xor_key != 0 {
             result.extend(data.iter().map(|&b| b ^ self.config.xor_key));
         } else {
             result.extend_from_slice(data);
         }
 
-        // Padding bytes (deterministic, looks like random)
         for i in 0..padding_len {
             result.push(((i as u64).wrapping_mul(self.counter).wrapping_add(0x5A) & 0xFF) as u8);
         }
@@ -314,18 +309,17 @@ impl Obfuscator {
     // ─── Size normalization ───────────────────────────────────────────────────
 
     fn apply_size_normalization(&self, data: &[u8]) -> Vec<u8> {
-        // Find next common size that fits
         let target = COMMON_SIZES.iter()
-            .find(|&&s| s >= data.len() + 3) // 3 = header overhead
+            .find(|&&s| s >= data.len() + 3)
             .copied()
             .unwrap_or(data.len() + 3);
 
         let padding_needed = target.saturating_sub(data.len() + 3);
         let mut result = Vec::with_capacity(target);
 
-        // Header: [0xVC][0xL0][padding_len as u8]
-        result.push(0xVC);
-        result.push(0xL0);
+        // Header: [0xCC][0xC0][padding_len as u8]
+        result.push(0xCC);
+        result.push(0xC0);
         result.push(padding_needed.min(255) as u8);
 
         if self.config.xor_key != 0 {
@@ -344,8 +338,6 @@ impl Obfuscator {
     // ─── TLS 1.3 mimicry ──────────────────────────────────────────────────────
 
     fn apply_tls_mimicry(&self, data: &[u8]) -> Vec<u8> {
-        // TLS Application Data record format:
-        // [ContentType: 0x17][Version: 0x03 0x03][Length: 2 bytes BE][payload]
         let xored: Vec<u8> = if self.config.xor_key != 0 {
             data.iter().map(|&b| b ^ self.config.xor_key).collect()
         } else {
@@ -366,7 +358,6 @@ impl Obfuscator {
                 "TLS mimicry: packet too short".to_string()
             ));
         }
-        // Verify TLS header
         if data[0] != TLS_RECORD_HEADER[0]
             || data[1] != TLS_RECORD_HEADER[1]
             || data[2] != TLS_RECORD_HEADER[2]
@@ -393,9 +384,6 @@ impl Obfuscator {
     // ─── HTTP/2 mimicry ───────────────────────────────────────────────────────
 
     fn apply_http2_mimicry(&self, data: &[u8]) -> Vec<u8> {
-        // HTTP/2 DATA frame format:
-        // [Length: 3 bytes BE][Type: 0x00][Flags: 0x00][Stream ID: 4 bytes][payload]
-        // Total header: 9 bytes
         let xored: Vec<u8> = if self.config.xor_key != 0 {
             data.iter().map(|&b| b ^ self.config.xor_key).collect()
         } else {
@@ -405,16 +393,13 @@ impl Obfuscator {
         let len = xored.len() as u32;
         let mut result = Vec::with_capacity(9 + xored.len());
 
-        // 3-byte length
         result.push(((len >> 16) & 0xFF) as u8);
         result.push(((len >> 8)  & 0xFF) as u8);
         result.push((len & 0xFF) as u8);
 
-        // Type = DATA (0x00), Flags = END_STREAM (0x01)
         result.push(HTTP2_DATA_FRAME_TYPE);
         result.push(0x00);
 
-        // Stream ID (31-bit, using counter % 100 + 1 for variety)
         let stream_id = (self.counter % 100 + 1) as u32;
         result.extend_from_slice(&stream_id.to_be_bytes());
 
@@ -484,7 +469,6 @@ impl Obfuscator {
 }
 
 /// Check if raw bytes look like a TLS Application Data record.
-/// Used to detect if obfuscation is already applied.
 pub fn looks_like_tls(data: &[u8]) -> bool {
     data.len() >= 5
         && data[0] == TLS_RECORD_HEADER[0]
@@ -608,7 +592,7 @@ mod tests {
     fn test_http2_invalid_type() {
         let mut obf = Obfuscator::new(ObfuscationConfig::http2_mimicry());
         let mut bad = vec![0u8; 12];
-        bad[3] = 0xFF; // wrong frame type
+        bad[3] = 0xFF;
         assert!(obf.deobfuscate(&bad).is_err());
     }
 
@@ -681,7 +665,6 @@ mod tests {
         let mut obf = Obfuscator::new(ObfuscationConfig::size_normalization());
         let data = b"tiny";
         let out = obf.obfuscate(data);
-        // Should be at least one of the common sizes
         assert!(COMMON_SIZES.iter().any(|&s| s <= out.len()) || out.len() >= data.len());
     }
 
@@ -692,7 +675,6 @@ mod tests {
         let j1 = obf.jitter_ms();
         obf.obfuscate(b"packet2");
         let j2 = obf.jitter_ms();
-        // Counter changes, so jitter may differ
         assert!(j1 <= obf.config().jitter_max_ms);
         assert!(j2 <= obf.config().jitter_max_ms);
     }
