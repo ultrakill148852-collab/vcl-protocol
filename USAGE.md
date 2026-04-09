@@ -28,15 +28,24 @@ VCL Protocol is a cryptographically chained packet transport protocol. It ensure
 - **[v0.5.0]** AIMD congestion control with slow start
 - **[v0.5.0]** Automatic retransmission with exponential backoff
 - **[v0.5.0]** `VCLMetrics` API for performance monitoring
+- **[v1.0.0]** TUN interface for IP packet capture (Linux)
+- **[v1.0.0]** Full IP/TCP/UDP/ICMP packet parser
+- **[v1.0.0]** Multipath with 5 scheduling policies
+- **[v1.0.0]** Automatic MTU negotiation via binary search
+- **[v1.0.0]** NAT Keepalive (Mobile/Home/Corporate presets)
+- **[v1.0.0]** Automatic reconnection with exponential backoff
+- **[v1.0.0]** DNS leak protection with blocklist and split DNS
+- **[v1.0.0]** Traffic obfuscation — TLS/HTTP2 mimicry for DPI bypass
 
 ---
 
 ## Installation 🚀
 
 ### Add to Cargo.toml
+
 ```toml
 [dependencies]
-vcl-protocol = "0.5.0"
+vcl-protocol = "1.0.0"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -45,6 +54,7 @@ tokio = { version = "1", features = ["full"] }
 ## Quick Start 📝
 
 ### Server Example
+
 ```rust
 use vcl_protocol::connection::VCLConnection;
 
@@ -68,6 +78,7 @@ async fn main() {
 ```
 
 ### Client Example
+
 ```rust
 use vcl_protocol::connection::VCLConnection;
 
@@ -91,9 +102,290 @@ async fn main() {
 
 ---
 
+## Traffic Obfuscation 🎭
+
+Bypass DPI censorship used by ISPs like МТС and Beeline.
+
+```rust
+use vcl_protocol::obfuscation::{Obfuscator, ObfuscationConfig, recommended_mode};
+
+// Auto-select based on network
+let mode = recommended_mode("mts");      // → Full (TLS + size norm + jitter)
+let mode = recommended_mode("home");     // → TlsMimicry
+let mode = recommended_mode("office");   // → Http2Mimicry
+
+// Use full obfuscation for mobile censored networks
+let mut obf = Obfuscator::new(ObfuscationConfig::full());
+
+let data = b"secret vcl packet";
+let obfuscated = obf.obfuscate(data);        // → looks like TLS to DPI
+let restored   = obf.deobfuscate(&obfuscated).unwrap();
+assert_eq!(restored, data);
+
+println!("Overhead: {:.1}%", obf.overhead_ratio() * 100.0);
+println!("Jitter:   {}ms",   obf.jitter_ms());
+```
+
+### Obfuscation Mode Reference
+
+| Mode | What it looks like | Overhead | Use case |
+|------|-------------------|----------|----------|
+| `None` | Raw VCL | 0% | Trusted networks |
+| `Padding` | Random size | ~5% | Basic protection |
+| `SizeNormalization` | Common HTTPS sizes | ~10% | Size fingerprinting |
+| `TlsMimicry` | TLS 1.3 HTTPS | ~3% | Home/ISP blocks |
+| `Http2Mimicry` | HTTP/2 DATA | ~6% | Corporate firewalls |
+| `Full` | TLS + normalized + jitter | ~15% | МТС/Beeline DPI |
+
+---
+
+## TUN Interface 🖥️
+
+Capture and inject IP packets from the OS network stack. **Linux only, requires root or `CAP_NET_ADMIN`.**
+
+```rust
+use vcl_protocol::tun_device::{VCLTun, TunConfig};
+use vcl_protocol::ip_packet::{parse_ip_packet, ParsedPacket};
+
+#[tokio::main]
+async fn main() {
+    let config = TunConfig {
+        name: "vcl0".to_string(),
+        address: "10.0.0.1".parse().unwrap(),
+        destination: "10.0.0.2".parse().unwrap(),
+        netmask: "255.255.255.0".parse().unwrap(),
+        mtu: 1420,
+    };
+
+    let mut tun = VCLTun::create(config).unwrap();
+
+    loop {
+        let raw = tun.read_packet().await.unwrap();
+        let packet = parse_ip_packet(raw).unwrap();
+        println!("{}", packet.summary());
+        // encrypt and forward via VCLConnection...
+    }
+}
+```
+
+---
+
+## IP Packet Parser 📦
+
+```rust
+use vcl_protocol::ip_packet::{ParsedPacket, TransportProtocol};
+
+let raw = vec![/* raw IP packet bytes */];
+let pkt = ParsedPacket::parse(raw).unwrap();
+
+println!("{}",   pkt.summary());       // "TCP 192.168.1.1:80 → 10.0.0.1:8080 SYN (40 bytes)"
+println!("{}",   pkt.src_ip);
+println!("{}",   pkt.dst_ip);
+println!("{}",   pkt.ttl);
+println!("{}",   pkt.is_dns());        // UDP dst port 53?
+println!("{}",   pkt.is_ping());       // ICMP echo request?
+
+if let TransportProtocol::Tcp { src_port, dst_port, syn, .. } = &pkt.transport {
+    println!("TCP {}→{} syn={}", src_port, dst_port, syn);
+}
+```
+
+---
+
+## Multipath 🔀
+
+Send traffic across multiple interfaces simultaneously.
+
+```rust
+use vcl_protocol::multipath::{MultipathSender, MultipathReceiver, PathInfo, SchedulingPolicy};
+
+// Define paths
+let paths = vec![
+    PathInfo::new("wifi",     "192.168.1.100", 100, 10),  // 100Mbps, 10ms
+    PathInfo::new("lte",      "10.0.0.50",      50, 30),  // 50Mbps, 30ms
+    PathInfo::new("ethernet", "172.16.0.1",    200,  5),  // 200Mbps, 5ms
+];
+
+let mut sender = MultipathSender::new(paths, SchedulingPolicy::WeightedRoundRobin);
+let mut receiver = MultipathReceiver::new();
+
+// Send — select best path
+if let Some(idx) = sender.select_path_index(data.len()) {
+    let path = sender.path(idx).unwrap();
+    println!("Sending via {}", path.local_addr);
+    // connect to peer via path.local_addr and send
+}
+
+// Redundant mode — send on ALL paths
+let all_paths = sender.select_all_paths();
+
+// Receive — reorder buffer
+let result = receiver.add(seq, "wifi", data);
+if let Some((path_id, payload)) = result {
+    // in-order delivery
+    let drained = receiver.drain_ordered(); // get any buffered packets
+}
+
+// Deactivate a failed path
+sender.deactivate_path(1);
+sender.activate_path(1); // when it comes back
+
+// Stats
+println!("Loss rate wifi: {:.2}%", sender.path(0).unwrap().loss_rate() * 100.0);
+```
+
+---
+
+## MTU Negotiation 📐
+
+```rust
+use vcl_protocol::mtu::{MtuNegotiator, MtuConfig};
+
+// Auto-detect for mobile (inside WireGuard tunnel)
+let mut neg = MtuNegotiator::new(MtuConfig::inside_wireguard());
+
+// Start probing
+let mut probe_size = neg.start_discovery();
+
+loop {
+    // Send probe packet of probe_size bytes and check if it arrives
+    let success = true; // result of your probe
+    match neg.record_probe(probe_size, success) {
+        Some(next) => probe_size = next,
+        None       => break, // discovery complete
+    }
+}
+
+println!("Path MTU:      {}", neg.current_mtu());
+println!("fragment_size: {}", neg.recommended_fragment_size());
+
+// Apply to config
+// config.fragment_size = neg.recommended_fragment_size();
+```
+
+---
+
+## Keepalive 💓
+
+Keep NAT entries alive — especially important on mobile networks.
+
+```rust
+use vcl_protocol::keepalive::{KeepaliveManager, KeepalivePreset, KeepaliveAction};
+
+// Mobile preset: 20s interval, max 3 missed pongs
+let mut keepalive = KeepaliveManager::from_preset(KeepalivePreset::Mobile);
+
+loop {
+    match keepalive.check() {
+        KeepaliveAction::SendPing => {
+            keepalive.record_keepalive_sent();
+            // conn.ping().await?;
+        }
+        KeepaliveAction::PongTimeout => {
+            keepalive.record_pong_missed();
+        }
+        KeepaliveAction::ConnectionDead => {
+            println!("Connection dead — reconnecting");
+            break;
+        }
+        KeepaliveAction::Idle => {}
+    }
+    // Record activity when data is received
+    // keepalive.record_activity();
+    // keepalive.record_pong_received(); // when pong arrives
+
+    // tokio::time::sleep(Duration::from_secs(1)).await;
+}
+```
+
+### Keepalive Preset Reference
+
+| Preset | Interval | Timeout | Max missed | Network |
+|--------|----------|---------|------------|---------|
+| `Mobile` | 20s | 5s | 3 | МТС/Beeline/МегаФон |
+| `Home` | 60s | 10s | 3 | Home broadband |
+| `Corporate` | 120s | 15s | 2 | Office firewall |
+| `DataCenter` | 30s | 10s | 5 | Server-to-server |
+| `Disabled` | — | — | — | No keepalive |
+
+---
+
+## Automatic Reconnect 🔄
+
+```rust
+use vcl_protocol::reconnect::{ReconnectManager, ReconnectConfig, ReconnectState};
+
+// Mobile preset: fast retry, no max attempts
+let mut reconnect = ReconnectManager::mobile();
+
+// Connection dropped
+reconnect.on_disconnect();
+
+loop {
+    if reconnect.should_reconnect() {
+        reconnect.on_attempt_start();
+        let success = true; // result of reconnect attempt
+
+        if success {
+            reconnect.on_connect();
+            println!("Reconnected after {} attempts", reconnect.attempts());
+            break;
+        } else {
+            reconnect.on_failure();
+            if reconnect.is_giving_up() {
+                println!("Gave up after {} attempts", reconnect.attempts());
+                break;
+            }
+            println!("Next retry in {:?}", reconnect.time_until_reconnect());
+        }
+    }
+
+    // Check if stable connection (resets backoff counter)
+    reconnect.check_stability();
+
+    // tokio::time::sleep(Duration::from_secs(1)).await;
+}
+```
+
+---
+
+## DNS Leak Protection 🛡️
+
+```rust
+use vcl_protocol::dns::{DnsFilter, DnsConfig, DnsAction, DnsQueryType, DnsFilter};
+
+let config = DnsConfig::cloudflare()              // upstream: 1.1.1.1
+    .with_blocked_domain("ads.com")               // block ads
+    .with_blocked_domain("tracking.io")
+    .with_split_domain("corp.internal");           // corp stays local
+
+let mut filter = DnsFilter::new(config);
+
+// When you receive a UDP packet on port 53:
+if DnsFilter::is_dns_packet(&udp_payload) {
+    let domain = "ads.com";
+    match filter.decide(domain, &DnsQueryType::A) {
+        DnsAction::Block               => { /* return NXDOMAIN */ }
+        DnsAction::ForwardThroughTunnel => {
+            // forward to filter.primary_upstream() via VCL tunnel
+        }
+        DnsAction::AllowDirect         => { /* use OS resolver */ }
+        DnsAction::ReturnCached(addr)  => { /* return cached addr */ }
+    }
+    // After getting response, cache it:
+    filter.cache_response(domain, addr);
+}
+
+// Stats
+println!("Intercepted: {}", filter.total_intercepted());
+println!("Blocked:     {}", filter.total_blocked());
+println!("Cache hits:  {}", filter.total_cache_hits());
+```
+
+---
+
 ## Config Presets ⚙️
 
-`VCLConfig` controls transport, reliability, fragmentation, and flow control.
 ```rust
 use vcl_protocol::connection::VCLConnection;
 use vcl_protocol::config::VCLConfig;
@@ -118,7 +410,7 @@ async fn main() {
         VCLConfig::streaming()
     ).await.unwrap();
 
-    // Auto mode (default) — adapts to network conditions
+    // Auto mode (default)
     let mut conn = VCLConnection::bind("127.0.0.1:0").await.unwrap();
 }
 ```
@@ -133,6 +425,7 @@ async fn main() {
 | `auto()` | Auto | Adaptive | 1200B | 64 | Unknown/mixed |
 
 ### Custom Config
+
 ```rust
 use vcl_protocol::config::{VCLConfig, TransportMode, ReliabilityMode};
 
@@ -150,17 +443,14 @@ let config = VCLConfig {
 
 ## WebSocket Transport 🌐
 
-Browser-compatible transport that works through HTTP proxies and firewalls.
 ```rust
 use vcl_protocol::transport::VCLTransport;
 
 #[tokio::main]
 async fn main() {
-    // Server side
     let listener = VCLTransport::bind_ws("127.0.0.1:8080").await.unwrap();
     let mut server_conn = listener.accept().await.unwrap();
 
-    // Client side
     let mut client = VCLTransport::connect_ws("ws://127.0.0.1:8080").await.unwrap();
 
     client.send_raw(b"hello from browser").await.unwrap();
@@ -169,118 +459,79 @@ async fn main() {
 }
 ```
 
-WebSocket transport uses binary frames. Ping, pong, text, and close frames are handled automatically — only binary data is exposed to the user.
-
 ---
 
 ## Retransmission & Congestion Control 📉
 
-Built into `FlowController` — no extra setup needed. Retransmission requests are returned by `timed_out_packets()` with the original data payload ready to resend.
 ```rust
 use vcl_protocol::flow::FlowController;
 
 let mut fc = FlowController::new(64);
-
-// Register sent packet with its data
 fc.on_send(0, b"important data".to_vec());
 
-// Check for timed-out packets periodically
 let requests = fc.timed_out_packets();
 for req in requests {
     println!("Retransmit seq={} attempt={}", req.sequence, req.retransmit_count);
-    // resend req.data here
 }
 
-// AIMD stats
 println!("cwnd: {:.1}", fc.cwnd());
 println!("in slow start: {}", fc.in_slow_start());
 println!("total retransmits: {}", fc.total_retransmits());
 ```
 
-AIMD algorithm:
-- **Slow start:** cwnd grows by 1 per ack until ssthresh
-- **Congestion avoidance:** cwnd grows by 1/cwnd per ack
-- **On loss:** cwnd reset to 1, ssthresh halved, RTO doubled
-
 ---
 
 ## Metrics API 📊
 
-`VCLMetrics` collects performance and health statistics for a connection or pool.
 ```rust
 use vcl_protocol::metrics::VCLMetrics;
 use std::time::Duration;
 
 let mut m = VCLMetrics::new();
-
-// Record events
 m.record_sent(1024);
 m.record_received(512);
 m.record_retransmit();
 m.record_rtt_sample(Duration::from_millis(42));
 m.record_cwnd(32);
-m.record_handshake();
-m.record_key_rotation();
 
-// Read stats
-println!("Loss rate:    {:.2}%", m.loss_rate() * 100.0);
-println!("Avg RTT:      {:?}", m.avg_rtt());
-println!("Min RTT:      {:?}", m.min_rtt());
-println!("Max RTT:      {:?}", m.max_rtt());
-println!("Current cwnd: {:?}", m.current_cwnd());
-println!("Throughput:   {:.0} B/s sent", m.throughput_sent_bps());
-println!("Uptime:       {:?}", m.uptime());
-println!("Total dropped:{}", m.total_dropped());
-```
+println!("Loss rate:  {:.2}%", m.loss_rate() * 100.0);
+println!("Avg RTT:    {:?}", m.avg_rtt());
+println!("Throughput: {:.0} B/s", m.throughput_sent_bps());
+println!("Dropped:    {}", m.total_dropped());
 
-### Pool-level aggregation
-```rust
+// Pool aggregation
 let mut pool_metrics = VCLMetrics::new();
-let conn_metrics = VCLMetrics::new(); // from individual connection
-pool_metrics.merge(&conn_metrics);
+pool_metrics.merge(&m);
 ```
 
 ---
 
 ## Fragmentation 🧩
 
-Large payloads are automatically split and reassembled — no manual steps needed.
 ```rust
-// Sender — payload > fragment_size is split automatically
 let large_data = vec![0u8; 50_000];
 client.send(&large_data).await.unwrap();
 
-// Receiver — recv() returns the complete reassembled payload
 let packet = server.recv().await.unwrap();
 assert_eq!(packet.payload.len(), 50_000);
 ```
-
-Fragmentation behaviour is controlled by `VCLConfig::fragment_size` (default 1200 bytes).
-Out-of-order fragment arrival is handled automatically.
 
 ---
 
 ## Flow Control 🌊
 
-The sliding window flow controller is built into every connection.
 ```rust
 let conn = VCLConnection::bind("127.0.0.1:0").await.unwrap();
 
-println!("Can send:      {}", conn.flow().can_send());
-println!("In flight:     {}", conn.flow().in_flight_count());
-println!("cwnd:          {:.1}", conn.flow().cwnd());
-println!("Effective win: {}", conn.flow().effective_window());
-println!("Loss rate:     {:.2}%", conn.flow().loss_rate() * 100.0);
-println!("Retransmits:   {}", conn.flow().total_retransmits());
+println!("Can send:  {}", conn.flow().can_send());
+println!("In flight: {}", conn.flow().in_flight_count());
+println!("cwnd:      {:.1}", conn.flow().cwnd());
+println!("Loss:      {:.2}%", conn.flow().loss_rate() * 100.0);
 
 if let Some(rtt) = conn.flow().srtt() {
     println!("SRTT: {:?}", rtt);
 }
-if let Some(rttvar) = conn.flow().rttvar() {
-    println!("RTTVAR: {:?}", rttvar);
-}
 
-// Manually ack a packet (advanced use)
 conn.ack_packet(sequence_number);
 ```
 
@@ -288,140 +539,86 @@ conn.ack_packet(sequence_number);
 
 ## Transport Abstraction 🔌
 
-Use `VCLTransport` directly for low-level TCP/UDP/WebSocket control.
 ```rust
 use vcl_protocol::transport::VCLTransport;
 use vcl_protocol::config::VCLConfig;
 
-// UDP
-let mut udp = VCLTransport::bind_udp("127.0.0.1:0").await.unwrap();
-
-// TCP server
-let listener = VCLTransport::bind_tcp("127.0.0.1:8080").await.unwrap();
-let mut conn = listener.accept().await.unwrap();
-
-// TCP client
-let mut client = VCLTransport::connect_tcp("127.0.0.1:8080").await.unwrap();
-
-// WebSocket server
-let ws_listener = VCLTransport::bind_ws("127.0.0.1:8081").await.unwrap();
-let mut ws_conn = ws_listener.accept().await.unwrap();
-
-// WebSocket client
-let mut ws_client = VCLTransport::connect_ws("ws://127.0.0.1:8081").await.unwrap();
-
-// From config
-let transport = VCLTransport::from_config_server("127.0.0.1:0", &VCLConfig::vpn()).await.unwrap();
-assert!(transport.is_tcp());
-assert!(ws_client.is_websocket());
+let udp       = VCLTransport::bind_udp("127.0.0.1:0").await.unwrap();
+let tcp_srv   = VCLTransport::bind_tcp("127.0.0.1:8080").await.unwrap();
+let tcp_conn  = tcp_srv.accept().await.unwrap();
+let tcp_cli   = VCLTransport::connect_tcp("127.0.0.1:8080").await.unwrap();
+let ws_srv    = VCLTransport::bind_ws("127.0.0.1:8081").await.unwrap();
+let ws_conn   = ws_srv.accept().await.unwrap();
+let ws_cli    = VCLTransport::connect_ws("ws://127.0.0.1:8081").await.unwrap();
+let from_cfg  = VCLTransport::from_config_server("127.0.0.1:0", &VCLConfig::vpn()).await.unwrap();
 ```
 
 ---
 
 ## Connection Pool 🏊
+
 ```rust
 use vcl_protocol::VCLPool;
 
-#[tokio::main]
-async fn main() {
-    let mut pool = VCLPool::new(10);
+let mut pool = VCLPool::new(10);
+let id1 = pool.bind("127.0.0.1:0").await.unwrap();
+let id2 = pool.bind("127.0.0.1:0").await.unwrap();
 
-    let id1 = pool.bind("127.0.0.1:0").await.unwrap();
-    let id2 = pool.bind("127.0.0.1:0").await.unwrap();
+pool.connect(id1, "127.0.0.1:8080").await.unwrap();
+pool.send(id1, b"Hello!").await.unwrap();
 
-    pool.connect(id1, "127.0.0.1:8080").await.unwrap();
-    pool.connect(id2, "127.0.0.1:8081").await.unwrap();
+let packet = pool.recv(id1).await.unwrap();
+println!("Active: {} / Full: {}", pool.len(), pool.is_full());
 
-    pool.send(id1, b"Hello server 1!").await.unwrap();
-    pool.send(id2, b"Hello server 2!").await.unwrap();
-
-    let packet = pool.recv(id1).await.unwrap();
-    println!("{}", String::from_utf8_lossy(&packet.payload));
-
-    println!("Active connections: {}", pool.len());
-    println!("Is full: {}", pool.is_full());
-
-    pool.close(id1).unwrap();
-    pool.close_all();
-}
+pool.close(id1).unwrap();
+pool.close_all();
 ```
 
 ---
 
 ## Logging 📝
+
 ```rust
 tracing_subscriber::fmt::init();
 ```
 
 Log levels:
-- `INFO` — handshake, open/close, key rotation, fragmentation complete, slow start exit
-- `DEBUG` — packet send/receive, fragments, flow window, AIMD cwnd changes
-- `WARN` — replay attacks, chain failures, flow window full, timeouts, retransmissions, AIMD decrease
+- `INFO` — handshake, open/close, key rotation, MTU found, reconnect success
+- `DEBUG` — packet send/receive, fragments, flow window, AIMD changes, DNS cache
+- `WARN` — replay attacks, chain failures, timeouts, retransmits, pong missed, DNS blocked
 - `ERROR` — operations on closed connections
 
 ---
 
 ## Connection Events 📡
+
 ```rust
 use vcl_protocol::{connection::VCLConnection, VCLEvent};
 
-#[tokio::main]
-async fn main() {
-    let mut conn = VCLConnection::bind("127.0.0.1:0").await.unwrap();
-    let mut events = conn.subscribe();
+let mut conn = VCLConnection::bind("127.0.0.1:0").await.unwrap();
+let mut events = conn.subscribe();
 
-    tokio::spawn(async move {
-        while let Some(event) = events.recv().await {
-            match event {
-                VCLEvent::Connected =>
-                    println!("Handshake complete"),
-                VCLEvent::Disconnected =>
-                    println!("Connection closed"),
-                VCLEvent::PacketReceived { sequence, size } =>
-                    println!("Packet #{} ({} bytes)", sequence, size),
-                VCLEvent::PingReceived =>
-                    println!("Ping — pong sent automatically"),
-                VCLEvent::PongReceived { latency } =>
-                    println!("RTT: {:?}", latency),
-                VCLEvent::KeyRotated =>
-                    println!("Key rotation complete"),
-                VCLEvent::Error(msg) =>
-                    eprintln!("Error: {}", msg),
-            }
+tokio::spawn(async move {
+    while let Some(event) = events.recv().await {
+        match event {
+            VCLEvent::Connected                => println!("Handshake complete"),
+            VCLEvent::Disconnected             => println!("Connection closed"),
+            VCLEvent::PacketReceived { sequence, size } => println!("#{} ({} bytes)", sequence, size),
+            VCLEvent::PingReceived             => println!("Ping — pong sent"),
+            VCLEvent::PongReceived { latency } => println!("RTT: {:?}", latency),
+            VCLEvent::KeyRotated               => println!("Keys rotated"),
+            VCLEvent::Error(msg)               => eprintln!("Error: {}", msg),
         }
-    });
-
-    conn.connect("127.0.0.1:8080").await.unwrap();
-}
-```
-
----
-
-## Ping / Heartbeat 🏓
-```rust
-client.ping().await.unwrap();
-
-loop {
-    match client.recv().await {
-        Ok(packet) => { /* handle data */ }
-        Err(e)     => { eprintln!("{}", e); break; }
     }
-}
-```
+});
 
----
-
-## Key Rotation 🔄
-```rust
-// Initiator
-client.rotate_keys().await.unwrap();
-
-// Responder — handled automatically inside recv()
+conn.connect("127.0.0.1:8080").await.unwrap();
 ```
 
 ---
 
 ## Benchmarks 📊
+
 ```bash
 cargo bench
 ```
@@ -483,7 +680,7 @@ cargo bench
 | `ExpectedClientHello` | Wrong handshake message |
 | `ExpectedServerHello` | Wrong handshake message |
 | `SerializationError(msg)` | bincode failed |
-| `IoError(msg)` | Socket, WebSocket, or address error |
+| `IoError(msg)` | Socket, WebSocket, TUN, or address error |
 
 ---
 
@@ -518,11 +715,23 @@ cargo bench
 - Fresh X25519 per rotation
 - Old key encrypts rotation messages
 
+### 8. Traffic Obfuscation (v1.0.0)
+- TLS 1.3 record format mimicry
+- HTTP/2 DATA frame mimicry
+- Size normalization to common HTTPS sizes
+- Timing jitter to defeat timing analysis
+
+### 9. DNS Protection (v1.0.0)
+- All DNS routed through VCL tunnel
+- Blocklist prevents ad/tracking DNS leaks
+- Split DNS for local corporate domains
+
 ---
 
 ## Testing 🧪
+
 ```bash
-cargo test                         # All 113 tests
+cargo test                         # All 257 tests
 cargo test --lib                   # Unit tests
 cargo test --test integration_test # Integration tests
 cargo bench                        # Benchmarks
@@ -533,6 +742,7 @@ cargo run --example client         # Example client
 ---
 
 ## Project Structure 📦
+
 ```text
 vcl-protocol/
 ├── src/
@@ -549,7 +759,15 @@ vcl-protocol/
 │   ├── transport.rs     # VCLTransport (UDP/TCP/WebSocket)
 │   ├── fragment.rs      # Fragmenter + Reassembler
 │   ├── flow.rs          # FlowController + AIMD + Retransmission
-│   └── metrics.rs       # VCLMetrics
+│   ├── metrics.rs       # VCLMetrics
+│   ├── tun_device.rs    # VCLTun — TUN interface (Linux)
+│   ├── ip_packet.rs     # IP/TCP/UDP/ICMP parser
+│   ├── multipath.rs     # MultipathSender + MultipathReceiver
+│   ├── mtu.rs           # MtuNegotiator
+│   ├── keepalive.rs     # KeepaliveManager
+│   ├── reconnect.rs     # ReconnectManager
+│   ├── dns.rs           # DnsFilter + DnsConfig
+│   └── obfuscation.rs   # Obfuscator + ObfuscationMode
 ├── benches/
 │   └── vcl_benchmarks.rs
 ├── examples/
@@ -591,42 +809,43 @@ MIT License — see LICENSE file for details.
 
 ## Changelog 🔄
 
-### v0.5.0 (Current) ✨
-- **WebSocket Transport** — `bind_ws()`, `connect_ws()`, binary frames via `tokio-tungstenite`
-- **Congestion Control (AIMD)** — slow start + congestion avoidance + multiplicative decrease
-- **Retransmission** — `RetransmitRequest` with data payload, exponential RTO backoff
-- **RFC 6298 RTT** — SRTT + RTTVAR estimation, dynamic RTO
-- **Metrics API** — `VCLMetrics` with merge() for pool aggregation
-- **113/113 tests passing**
+### v1.0.0 (Current) 🎉
+- **TUN Interface** — `VCLTun` for IP packet capture (Linux, `CAP_NET_ADMIN`)
+- **IP Parser** — full IPv4/IPv6/TCP/UDP/ICMP parsing via `etherparse`
+- **Multipath** — `MultipathSender` + `MultipathReceiver` with 5 scheduling policies
+- **MTU Negotiation** — binary search path MTU discovery
+- **Keepalive** — NAT keepalive with Mobile/Home/Corporate presets
+- **Reconnect** — exponential backoff with jitter and stability detection
+- **DNS Protection** — `DnsFilter` with blocklist, split DNS, response cache
+- **Traffic Obfuscation** — TLS mimicry, HTTP/2 mimicry, size normalization
+- **257/257 tests passing**
+
+### v0.5.0 ✅
+- WebSocket Transport
+- Congestion Control (AIMD)
+- Retransmission with exponential RTO backoff
+- RFC 6298 RTT estimation
+- Metrics API (`VCLMetrics`)
+- 113/113 tests passing
 
 ### v0.4.0 ✅
-- TCP/UDP Transport Abstraction (`VCLTransport`)
-- Packet Fragmentation (Fragmenter + Reassembler)
+- TCP/UDP Transport Abstraction
+- Packet Fragmentation
 - Flow Control (sliding window)
-- Config Presets (`VCLConfig::vpn()`, `gaming()`, `streaming()`, `auto()`)
-- `bind_with_config()`
+- Config Presets
 - 89/89 tests passing
 
 ### v0.3.0 ✅
-- Connection Pool (`VCLPool`)
-- Tracing logs
-- Benchmarks (criterion)
-- Full API docs on docs.rs
+- Connection Pool, Tracing, Benchmarks, docs.rs
 - 33/33 tests passing
 
 ### v0.2.0 ✅
-- Connection Events (`VCLEvent` + `subscribe()`)
-- Ping / Heartbeat with latency measurement
-- Mid-session Key Rotation
-- Custom Error Types (`VCLError`)
-- Bidirectional chain fix
+- Connection Events, Ping/Heartbeat, Key Rotation, Custom Errors
+- 29/29 tests passing
 
 ### v0.1.0 ✅
-- Cryptographic chain with SHA-256
-- Ed25519 signatures + X25519 handshake
-- XChaCha20-Poly1305 authenticated encryption
-- Replay protection
-- Session management
+- Cryptographic chain, Ed25519, X25519, XChaCha20-Poly1305
+- Replay protection, Session management
 - 17/17 tests passing
 
 ---
