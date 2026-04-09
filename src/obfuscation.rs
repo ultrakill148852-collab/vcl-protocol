@@ -46,36 +46,24 @@ pub enum ObfuscationMode {
     /// No obfuscation — raw VCL packets.
     None,
     /// Add random padding to disguise payload size.
-    /// Least overhead, basic protection against size analysis.
     Padding,
     /// Normalize packet sizes to common HTTPS sizes.
-    /// More consistent disguise than random padding.
     SizeNormalization,
     /// Wrap packets in fake TLS 1.3 Application Data records.
-    /// Looks like TLS traffic to shallow DPI.
     TlsMimicry,
     /// Wrap packets in fake HTTP/2 DATA frames.
-    /// Looks like HTTP/2 traffic — harder to block without breaking real HTTP/2.
     Http2Mimicry,
-    /// Full obfuscation: TLS mimicry + size normalization + padding.
-    /// Maximum protection, highest overhead.
+    /// Full obfuscation: TLS mimicry + size normalization.
     Full,
 }
 
 /// Configuration for traffic obfuscation.
 #[derive(Debug, Clone)]
 pub struct ObfuscationConfig {
-    /// Obfuscation mode.
     pub mode: ObfuscationMode,
-    /// Add random jitter (0–jitter_max_ms ms) before sending.
-    /// Disguises traffic timing patterns.
     pub jitter_max_ms: u64,
-    /// Minimum packet size after padding (0 = no minimum).
     pub min_packet_size: usize,
-    /// Maximum packet size — larger packets are split before obfuscation.
     pub max_packet_size: usize,
-    /// XOR key for lightweight payload scrambling (not encryption).
-    /// Prevents trivial content inspection. 0 = disabled.
     pub xor_key: u8,
 }
 
@@ -103,7 +91,6 @@ impl ObfuscationConfig {
     }
 
     /// TLS 1.3 mimicry — looks like HTTPS to DPI.
-    /// Recommended for bypassing ISP blocks.
     pub fn tls_mimicry() -> Self {
         ObfuscationConfig {
             mode: ObfuscationMode::TlsMimicry,
@@ -157,13 +144,9 @@ impl Default for ObfuscationConfig {
 /// Traffic obfuscator — wraps and unwraps VCL packets.
 pub struct Obfuscator {
     config: ObfuscationConfig,
-    /// Counter for deterministic padding (avoids true randomness dependency).
     counter: u64,
-    /// Total bytes obfuscated.
     total_obfuscated: u64,
-    /// Total bytes deobfuscated.
     total_deobfuscated: u64,
-    /// Total overhead bytes added by obfuscation.
     total_overhead: u64,
 }
 
@@ -180,22 +163,19 @@ impl Obfuscator {
     }
 
     /// Obfuscate a VCL packet payload.
-    ///
-    /// The returned bytes should be sent over the network instead of raw VCL data.
-    /// Use [`deobfuscate()`](Obfuscator::deobfuscate) on the receiver to restore.
     pub fn obfuscate(&mut self, data: &[u8]) -> Vec<u8> {
         self.counter += 1;
         let original_len = data.len();
 
         let result = match &self.config.mode {
-            ObfuscationMode::None => data.to_vec(),
-            ObfuscationMode::Padding => self.apply_padding(data),
+            ObfuscationMode::None             => data.to_vec(),
+            ObfuscationMode::Padding          => self.apply_padding(data),
             ObfuscationMode::SizeNormalization => self.apply_size_normalization(data),
-            ObfuscationMode::TlsMimicry => self.apply_tls_mimicry(data),
-            ObfuscationMode::Http2Mimicry => self.apply_http2_mimicry(data),
-            ObfuscationMode::Full => {
-                let padded = self.apply_size_normalization(data);
-                self.apply_tls_mimicry(&padded)
+            ObfuscationMode::TlsMimicry       => self.apply_tls_mimicry(data),
+            ObfuscationMode::Http2Mimicry     => self.apply_http2_mimicry(data),
+            ObfuscationMode::Full             => {
+                let normed = self.apply_size_normalization(data);
+                self.apply_tls_mimicry(&normed)
             }
         };
 
@@ -215,24 +195,20 @@ impl Obfuscator {
     }
 
     /// Deobfuscate a received packet back to raw VCL data.
-    ///
-    /// # Errors
-    /// Returns [`VCLError::InvalidPacket`] if the packet header is malformed
-    /// or doesn't match the expected obfuscation format.
     pub fn deobfuscate(&mut self, data: &[u8]) -> Result<Vec<u8>, VCLError> {
         if data.is_empty() {
             return Err(VCLError::InvalidPacket("Empty obfuscated packet".to_string()));
         }
 
         let result = match &self.config.mode {
-            ObfuscationMode::None => data.to_vec(),
-            ObfuscationMode::Padding => self.strip_padding(data)?,
-            ObfuscationMode::SizeNormalization => self.strip_padding(data)?,
-            ObfuscationMode::TlsMimicry => self.strip_tls_mimicry(data)?,
-            ObfuscationMode::Http2Mimicry => self.strip_http2_mimicry(data)?,
-            ObfuscationMode::Full => {
+            ObfuscationMode::None             => data.to_vec(),
+            ObfuscationMode::Padding          => self.strip_padding(data)?,
+            ObfuscationMode::SizeNormalization => self.strip_size_normalization(data)?,
+            ObfuscationMode::TlsMimicry       => self.strip_tls_mimicry(data)?,
+            ObfuscationMode::Http2Mimicry     => self.strip_http2_mimicry(data)?,
+            ObfuscationMode::Full             => {
                 let stripped_tls = self.strip_tls_mimicry(data)?;
-                self.strip_padding(&stripped_tls)?
+                self.strip_size_normalization(&stripped_tls)?
             }
         };
 
@@ -249,9 +225,6 @@ impl Obfuscator {
     }
 
     /// Returns the jitter delay in milliseconds to wait before sending.
-    ///
-    /// Call this before each send to add timing randomness.
-    /// Returns 0 if jitter is disabled.
     pub fn jitter_ms(&self) -> u64 {
         if self.config.jitter_max_ms == 0 {
             return 0;
@@ -309,18 +282,19 @@ impl Obfuscator {
     // ─── Size normalization ───────────────────────────────────────────────────
 
     fn apply_size_normalization(&self, data: &[u8]) -> Vec<u8> {
+        // Header: [0xCC][0xC0][padding_len u8] then payload then padding
         let target = COMMON_SIZES.iter()
             .find(|&&s| s >= data.len() + 3)
             .copied()
             .unwrap_or(data.len() + 3);
 
         let padding_needed = target.saturating_sub(data.len() + 3);
+        let padding_len = padding_needed.min(255);
         let mut result = Vec::with_capacity(target);
 
-        // Header: [0xCC][0xC0][padding_len as u8]
         result.push(0xCC);
         result.push(0xC0);
-        result.push(padding_needed.min(255) as u8);
+        result.push(padding_len as u8);
 
         if self.config.xor_key != 0 {
             result.extend(data.iter().map(|&b| b ^ self.config.xor_key));
@@ -328,11 +302,32 @@ impl Obfuscator {
             result.extend_from_slice(data);
         }
 
-        for i in 0..padding_needed.min(255) {
+        for i in 0..padding_len {
             result.push((i ^ 0x5A) as u8);
         }
 
         result
+    }
+
+    fn strip_size_normalization(&self, data: &[u8]) -> Result<Vec<u8>, VCLError> {
+        if data.len() < 3 {
+            return Err(VCLError::InvalidPacket("SizeNorm: too short".to_string()));
+        }
+        if data[0] != 0xCC || data[1] != 0xC0 {
+            return Err(VCLError::InvalidPacket("SizeNorm: invalid header".to_string()));
+        }
+        let padding_len = data[2] as usize;
+        let payload_end = data.len().saturating_sub(padding_len);
+        if payload_end < 3 {
+            return Err(VCLError::InvalidPacket("SizeNorm: invalid length".to_string()));
+        }
+        let payload = &data[3..payload_end];
+
+        if self.config.xor_key != 0 {
+            Ok(payload.iter().map(|&b| b ^ self.config.xor_key).collect())
+        } else {
+            Ok(payload.to_vec())
+        }
     }
 
     // ─── TLS 1.3 mimicry ──────────────────────────────────────────────────────
@@ -396,13 +391,11 @@ impl Obfuscator {
         result.push(((len >> 16) & 0xFF) as u8);
         result.push(((len >> 8)  & 0xFF) as u8);
         result.push((len & 0xFF) as u8);
-
         result.push(HTTP2_DATA_FRAME_TYPE);
         result.push(0x00);
 
         let stream_id = (self.counter % 100 + 1) as u32;
         result.extend_from_slice(&stream_id.to_be_bytes());
-
         result.extend_from_slice(&xored);
         result
     }
@@ -439,7 +432,6 @@ impl Obfuscator {
     // ─── Stats ────────────────────────────────────────────────────────────────
 
     /// Returns the overhead ratio: overhead_bytes / original_bytes.
-    /// Returns 0.0 if no data has been obfuscated.
     pub fn overhead_ratio(&self) -> f64 {
         if self.total_obfuscated == 0 {
             return 0.0;
@@ -478,15 +470,12 @@ pub fn looks_like_tls(data: &[u8]) -> bool {
 
 /// Check if raw bytes look like an HTTP/2 DATA frame.
 pub fn looks_like_http2(data: &[u8]) -> bool {
-    data.len() >= 9 && data[3] == HTTP2_DATA_FRAME_TYPE
+    data.len() >= 9
+        && data[3] == HTTP2_DATA_FRAME_TYPE
+        && data[0] != TLS_RECORD_HEADER[0]
 }
 
 /// Returns the recommended [`ObfuscationMode`] for a given network environment.
-///
-/// - `"mobile"` / `"mts"` / `"beeline"` → `Full`
-/// - `"corporate"` / `"office"` → `Http2Mimicry`
-/// - `"home"` → `TlsMimicry`
-/// - anything else → `Padding`
 pub fn recommended_mode(network_hint: &str) -> ObfuscationMode {
     match network_hint.to_lowercase().as_str() {
         "mobile" | "mts" | "beeline" | "megafon" | "tele2" => ObfuscationMode::Full,
