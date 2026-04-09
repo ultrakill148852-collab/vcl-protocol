@@ -30,8 +30,7 @@
 //!
 //! println!("Upstream DNS: {:?}", filter.config().upstream_servers);
 //! ```
-
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::IpAddr;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
