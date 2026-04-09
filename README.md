@@ -10,7 +10,7 @@
 [![Crates.io](https://img.shields.io/crates/v/vcl-protocol.svg)](https://crates.io/crates/vcl-protocol)
 [![Docs.rs](https://docs.rs/vcl-protocol/badge.svg)](https://docs.rs/vcl-protocol)
 [![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://www.rust-lang.org)
-[![Tests](https://img.shields.io/badge/tests-257%2F257%20passing-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-286%2F286%20passing-brightgreen.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/Status-v1.0.0%20Stable-green.svg)]()
 
