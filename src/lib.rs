@@ -44,6 +44,7 @@ pub mod keepalive;
 pub mod reconnect;
 pub mod dns;
 pub mod obfuscation;
+pub mod tunnel;
 
 pub use error::VCLError;
 pub use event::VCLEvent;
@@ -61,3 +62,4 @@ pub use keepalive::{KeepaliveManager, KeepaliveConfig, KeepaliveAction, Keepaliv
 pub use reconnect::{ReconnectManager, ReconnectConfig, ReconnectState};
 pub use dns::{DnsFilter, DnsConfig, DnsAction, DnsPacket};
 pub use obfuscation::{Obfuscator, ObfuscationConfig, ObfuscationMode};
+pub use tunnel::{VCLTunnel, TunnelConfig, TunnelState, TunnelStats};
