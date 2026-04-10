@@ -19,6 +19,7 @@ mod reconnect;
 mod dns;
 mod obfuscation;
 mod tunnel;
+mod pq_crypto;
 
 use connection::VCLConnection;
 use tokio::time::{sleep, Duration};
