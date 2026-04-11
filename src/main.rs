@@ -20,6 +20,7 @@ mod dns;
 mod obfuscation;
 mod tunnel;
 mod pq_crypto;
+mod prometheus_metrics;
 
 use connection::VCLConnection;
 use tokio::time::{sleep, Duration};
