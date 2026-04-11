@@ -46,6 +46,7 @@ pub mod dns;
 pub mod obfuscation;
 pub mod tunnel;
 pub mod pq_crypto;
+pub mod prometheus_metrics;
 
 pub use error::VCLError;
 pub use event::VCLEvent;
@@ -65,3 +66,4 @@ pub use dns::{DnsFilter, DnsConfig, DnsAction, DnsPacket};
 pub use obfuscation::{Obfuscator, ObfuscationConfig, ObfuscationMode};
 pub use tunnel::{VCLTunnel, TunnelConfig, TunnelState, TunnelStats};
 pub use pq_crypto::{PqKeyPair, PqHandshake, PqPublicBundle, PqServerResponse};
+pub use prometheus_metrics::VCLPrometheusExporter;
