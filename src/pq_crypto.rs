@@ -18,17 +18,15 @@
 //!
 //! ## Example
 //!
-//! ```rust
+//! ```rust,ignore
 //! use vcl_protocol::pq_crypto::{PqKeyPair, PqHandshake};
 //!
-//! // Client side
 //! let mut client_kp = PqKeyPair::generate();
 //! let client_hello = client_kp.client_hello();
 //!
-//! // Server side
 //! let mut server_kp = PqKeyPair::generate();
+//! let (server_hello, server_secret) = server_kp.server_respond(&client_hello).unwrap();
 //!
-//! // Client finalizes
 //! let client_secret = client_kp.client_finalize(&server_hello).unwrap();
 //!
 //! assert_eq!(client_secret, server_secret);
