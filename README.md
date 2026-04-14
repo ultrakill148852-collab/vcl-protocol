@@ -27,7 +27,7 @@
 
 VCL Protocol is a transport protocol where each packet cryptographically links to the previous one, creating an immutable chain of data transmission. Inspired by blockchain principles, optimized for real-time networking.
 
-**v1.1.0** builds upon the stable **v1.0.0** foundation (which introduced TUN interfaces, full IP parsing, multipath routing, MTU negotiation, and traffic obfuscation) and adds **Prometheus metrics export**, **experimental Post-Quantum cryptography placeholders**, and a **high-level Tunnel abstraction** for simplified VPN deployment.
+**v1.1.0** builds upon the stable **v1.0.0** foundation and adds **Prometheus metrics export** (`prometheus_metrics.rs`), **Post-Quantum cryptography** (`pq_crypto.rs`), and a **high-level Tunnel abstraction**.
 
 **Published on crates.io:** https://crates.io/crates/vcl-protocol
 **API Documentation:** https://docs.rs/vcl-protocol
@@ -60,9 +60,9 @@ VCL Protocol is a transport protocol where each packet cryptographically links t
 | 📉 Congestion Control | AIMD algorithm with slow start and retransmission |
 | 🔁 Retransmission | Automatic retransmit on timeout with exponential backoff |
 | 📊 Metrics API | `VCLMetrics` aggregates stats across connections and pools |
-| 📈 Prometheus Exporter | Native `/metrics` endpoint with process + VCL stats (CPU, mem, packets) |
-| 🔐 Post-Quantum Ready | Crypto-agile design with PQ primitives placeholder (Kyber/Dilithium) |
-| 🕳️ Tunnel Abstraction | High-level tunnel API over VCL sessions with automatic routing |
+| 📈 Prometheus Exporter | **v1.1.0**: Native `/metrics` endpoint with process + VCL stats |
+| 🔐 Post-Quantum Ready | **v1.1.0**: Experimental `pq_crypto` module (Hybrid X25519+Kyber) |
+| 🕳️ Tunnel Abstraction | **v1.1.0**: High-level VPN API with Mobile/Home/Corporate presets |
 | ⚙️ Config Presets | VPN, Gaming, Streaming, Auto — one line setup |
 | 📝 Tracing Logs | Structured logging via `tracing` crate |
 | 📈 Benchmarks | Performance benchmarks via `criterion` |
@@ -472,6 +472,12 @@ WebSocket transport allows VCL Protocol to work from browsers and through corpor
 - **Key Generation:** CSPRNG
 - **Replay Protection:** Sequence validation + nonce tracking (1000-entry window)
 
+### Post-Quantum Cryptography (v1.1.0, Experimental)
+- **Module:** `pq_crypto`
+- **Algorithm:** Hybrid Mode (X25519 + Kyber768)
+- **Status:** Experimental, requires `--features pq`
+- **Security:** Forward secrecy with PQ resilience
+
 ### Transport
 - **UDP** — low latency, default
 - **TCP** — reliable, ordered (VPN mode)
@@ -520,22 +526,14 @@ WebSocket transport allows VCL Protocol to work from browsers and through corpor
 - **Timing Jitter:** pseudo-random delay to disguise traffic patterns
 
 ### Prometheus Metrics (v1.1.0)
-- **Endpoint:** `GET /metrics` on configurable address (default `127.0.0.1:9090`)
-- **Format:** Prometheus text exposition format
-- **Metrics:** VCL-specific (packets, bytes, latency, connections) + process stats (CPU, memory, FDs)
-- **Integration:** Works with Grafana, Prometheus Server, VictoriaMetrics
-
-### Post-Quantum Cryptography (v1.1.0, experimental)
-- **Status:** Feature-flagged (`--features pq`), not enabled by default
-- **Design:** Crypto-agile architecture for easy primitive swaps
-- **Placeholders:** Kyber (KEM) and Dilithium (signatures) stubs
-- **Handshake:** Hybrid mode (X25519 + PQ) for forward compatibility
+- **Module:** `prometheus_metrics`
+- **Metrics:** Packets sent/recv, bytes, loss rate, RTT, connection state
+- **Integration:** Exports data compatible with Prometheus text format
 
 ### Tunnel Abstraction (v1.1.0)
-- **API:** `VclTunnel::new(session, config)` high-level wrapper
-- **Function:** Automatic IP packet routing between TUN and VCL session
-- **Integration:** Works with DNS filter, obfuscation, multipath
-- **Use case:** Simplified VPN client deployment
+- **API:** `VCLTunnel` with `TunnelConfig` presets
+- **Presets:** `Mobile` (aggressive keepalive, full obfuscation), `Home`, `Corporate`
+- **Integration:** Wraps TUN, VCL, DNS, and Obfuscation in one object
 
 ### Fragmentation
 - **Threshold:** configurable via `VCLConfig::fragment_size` (default 1200 bytes)
@@ -568,7 +566,6 @@ WebSocket transport allows VCL Protocol to work from browsers and through corpor
 - `serde` + `bincode` — Serialization
 - `tracing` — Structured logging
 - `tracing-subscriber` — Log output
-- `prometheus` — Metrics export (optional)
 
 ---
 
