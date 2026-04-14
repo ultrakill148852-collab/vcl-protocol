@@ -36,9 +36,9 @@ VCL Protocol is a cryptographically chained packet transport protocol. It ensure
 - **[v1.0.0]** Automatic reconnection with exponential backoff
 - **[v1.0.0]** DNS leak protection with blocklist and split DNS
 - **[v1.0.0]** Traffic obfuscation — TLS/HTTP2 mimicry for DPI bypass
-- **[v1.1.0]** Prometheus metrics export via native `/metrics` endpoint
-- **[v1.1.0]** Post-Quantum cryptography placeholders (Kyber/Dilithium ready)
-- **[v1.1.0]** High-level Tunnel abstraction for simplified VPN deployment
+- **[v1.1.0]** Prometheus metrics export via `prometheus_metrics`
+- **[v1.1.0]** Post-Quantum cryptography (Hybrid X25519 + Kyber)
+- **[v1.1.0]** High-level Tunnel abstraction with presets
 
 ---
 
@@ -522,24 +522,28 @@ pool_metrics.merge(&m);
 Native Prometheus endpoint for monitoring VCL connections and process stats.
 
 ```rust
-use vcl_protocol::metrics::PrometheusExporter;
+use vcl_protocol::prometheus_metrics::VCLPrometheusExporter;
 
 #[tokio::main]
 async fn main() {
-    // Start exporter on localhost:9090
-    let exporter = PrometheusExporter::new("127.0.0.1:9090")?;
+    // Создаём экспортер (адрес настраивается в вашем HTTP-сервере)
+    let exporter = VCLPrometheusExporter::new()?;
     
-    // Register your connection pool or metrics collector
-    exporter.register_pool(&pool);
+    // Обновляем метрики из VCLMetrics или TunnelStats
+    exporter.update_from_metrics(&vcl_metrics);
+    // или
+    exporter.update_from_tunnel_stats(&tunnel_stats);
     
-    // Metrics are now available at http://127.0.0.1:9090/metrics
-    // Example output:
-    // # HELP vcl_packets_sent_total Total packets sent
-    // # TYPE vcl_packets_sent_total counter
-    // vcl_packets_sent_total{connection_id="0"} 1234
-    // # HELP process_resident_memory_bytes Resident memory size
-    // # TYPE process_resident_memory_bytes gauge
-    // process_resident_memory_bytes 45678912
+    // Ручное обновление отдельных метрик:
+    exporter.update_bytes_sent(1024);
+    exporter.update_packets_received(5);
+    exporter.set_loss_rate(0.02);
+    exporter.set_rtt_seconds(0.042);
+    exporter.set_tunnel_state(2.0); // 0=Stopped, 1=Connecting, 2=Connected, 3=Reconnecting, 4=Failed
+    
+    // Рендерим в текстовый формат Prometheus для HTTP-ответа
+    let metrics_text = exporter.render();
+    // Отдаём metrics_text на /metrics эндпоинт вашего веб-сервера
 }
 ```
 
@@ -578,35 +582,39 @@ features = ["pq"]
 ```
 
 ```rust
-use vcl_protocol::pq_crypto::{PQKeyPair, ClientHello, ServerResponse};
+use vcl_protocol::pq_crypto::{PqKeyPair, PqPublicBundle, PqServerResponse};
 
-// Generate hybrid keypair (X25519 + Kyber placeholder)
-let client_keys = PQKeyPair::generate()?;
+// Генерация гибридного ключа (X25519 + Kyber768)
+let mut client_kp = PqKeyPair::generate(); // Возвращает Self напрямую, без Result
+let client_hello: PqPublicBundle = client_kp.client_hello(); // Метод экземпляра
 
-// Create client hello with PQ public key bundle
-let hello = ClientHello::new(&client_keys.public)?;
-let hello_bytes = hello.to_bytes()?;
+// Серверная сторона
+let mut server_kp = PqKeyPair::generate();
+let (server_response, server_secret) = server_kp.server_respond(&client_hello)?;
 
-// Server side: parse hello and generate response
-let parsed_hello = ClientHello::from_bytes(&hello_bytes)?;
-let server_keys = PQKeyPair::generate()?;
-let response = ServerResponse::new(&server_keys.public, &parsed_hello)?;
+// Клиент финализирует и получает общий секрет
+let client_secret = client_kp.client_finalize(&server_response)?;
 
-// Both sides compute hybrid shared secret
-let client_secret = client_keys.compute_secret(&response)?;
-let server_secret = server_keys.compute_secret(&parsed_hello)?;
-
-assert_eq!(client_secret, server_secret);
+assert_eq!(client_secret, server_secret); // Оба секрета идентичны
 ```
 
-### Security Notes
-
-⚠️ **This is experimental and NOT production-ready:**
+### ⚠️ Security Notes
 
 - PQ primitives are **placeholders** (Kyber/Dilithium stubs)
 - Hybrid mode combines X25519 + PQ for forward compatibility
+- Secret is `[u8; 32]` via `SHA-256(x25519_secret || kyber_secret)`
 - Do NOT rely on PQ security guarantees until NIST standardization is complete
 - Feature is opt-in to prevent accidental deployment
+
+### Utility for Testing
+
+```rust
+use vcl_protocol::pq_crypto::PqHandshake;
+
+// Быстрый тест гибридного рукопожатия локально
+let (client_secret, server_secret) = PqHandshake::run_local()?;
+assert_eq!(client_secret, server_secret);
+```
 
 ### Future Roadmap
 
@@ -622,36 +630,24 @@ assert_eq!(client_secret, server_secret);
 High-level API for building VPN clients with automatic IP packet routing.
 
 ```rust
-use vcl_protocol::tunnel::{VclTunnel, TunConfig, TunnelConfig};
-use vcl_protocol::config::VCLConfig;
+use vcl_protocol::tunnel::{VCLTunnel, TunnelConfig};
 
 #[tokio::main]
 async fn main() {
-    // Configure TUN device
-    let tun_config = TunConfig {
-        name: "vcl0".into(),
-        address: "10.8.0.1".parse()?,
-        destination: "10.8.0.2".parse()?,
-        netmask: "255.255.255.0".parse()?,
-        mtu: 1420,
-    };
+    // Используем готовый пресет (mobile, home, corporate)
+    let config = TunnelConfig::mobile("10.0.0.1", "10.0.0.2");
+    // или
+    // let config = TunnelConfig::home("10.0.0.1", "10.0.0.2");
+    // или
+    // let config = TunnelConfig::corporate("10.0.0.1", "10.0.0.2");
 
-    // Configure VCL session
-    let vcl_config = VCLConfig::vpn(); // TCP + reliable
+    // Создаём туннель (конструктор приватный, используем фабричный метод)
+    let mut tunnel = VCLTunnel::with_config(config)?;
 
-    // Create tunnel — wraps TUN + VCL + DNS filter + obfuscation
-    let mut tunnel = VclTunnel::new(tun_config, vcl_config)?;
-
-    // Connect to remote endpoint
-    tunnel.connect("vpn.example.com:443").await?;
-
-    // Tunnel now automatically:
-    // 1. Reads IP packets from TUN interface
-    // 2. Encrypts + obfuscates + sends via VCL
-    // 3. Receives + decrypts + deobfuscates
-    // 4. Writes packets back to TUN interface
-
-    // Optional: handle tunnel events
+    // Туннель сам управляет: keepalive, reconnect, DNS filter, obfuscation, MTU
+    // Вам остаётся только запустить его и обрабатывать события
+    
+    // Обработка событий туннеля (опционально)
     while let Some(event) = tunnel.events().recv().await {
         match event {
             TunnelEvent::Connected => println!("VPN tunnel established"),
@@ -663,11 +659,19 @@ async fn main() {
 }
 ```
 
+### TunnelConfig Presets
+
+| Preset | Keepalive | Obfuscation | Use case |
+|--------|-----------|-------------|----------|
+| `mobile()` | 20s interval | Full (TLS+jitter) | МТС/Beeline/МегаФон |
+| `home()` | 60s interval | TlsMimicry | Home broadband |
+| `corporate()` | 120s interval | Http2Mimicry | Office firewall |
+
 ### Benefits Over Manual Setup
 
 | Manual Approach | Tunnel Abstraction |
 |----------------|-------------------|
-| Wire TUN + VCL + DNS + Obfuscation manually | Single `VclTunnel::new()` call |
+| Wire TUN + VCL + DNS + Obfuscation manually | Single `VCLTunnel::with_config()` call |
 | Handle packet routing logic yourself | Automatic IP packet forwarding |
 | Manage reconnection + keepalive separately | Built-in reconnect + keepalive |
 | Configure DNS filter independently | Integrated split-DNS + blocklist |
@@ -943,7 +947,7 @@ vcl-protocol/
 │   ├── metrics.rs                 # VCLMetrics
 │   ├── prometheus_metrics.rs      # Prometheus exporter (v1.1.0)
 │   ├── pq_crypto.rs               # Post-quantum crypto placeholders (v1.1.0)
-│   ├── tunnel.rs                  # VclTunnel abstraction (v1.1.0)
+│   ├── tunnel.rs                  # VCLTunnel abstraction (v1.1.0)
 │   ├── tun_device.rs              # VCLTun — TUN interface (Linux)
 │   ├── ip_packet.rs               # IP/TCP/UDP/ICMP parser
 │   ├── multipath.rs               # MultipathSender + MultipathReceiver
@@ -994,9 +998,9 @@ MIT License — see LICENSE file for details.
 ## Changelog 🔄
 
 ### v1.1.0 (Current) 🎉
-- **Prometheus Metrics Export** — native `/metrics` endpoint with process + VCL stats
-- **Post-Quantum Crypto Placeholders** — hybrid handshake stubs (Kyber/Dilithium ready, `--features pq`)
-- **Tunnel Abstraction** — high-level `VclTunnel` API for simplified VPN deployment
+- **Prometheus Metrics Export** — native `/metrics` endpoint with process + VCL stats via `VCLPrometheusExporter`
+- **Post-Quantum Crypto Placeholders** — hybrid handshake stubs (Kyber/Dilithium ready, `--features pq`) via `PqKeyPair`
+- **Tunnel Abstraction** — high-level `VCLTunnel` API with `TunnelConfig` presets for simplified VPN deployment
 - **334/334 tests passing** (unit + integration + doc)
 
 ### v1.0.0 ✅
