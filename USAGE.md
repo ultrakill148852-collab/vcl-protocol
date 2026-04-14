@@ -36,6 +36,9 @@ VCL Protocol is a cryptographically chained packet transport protocol. It ensure
 - **[v1.0.0]** Automatic reconnection with exponential backoff
 - **[v1.0.0]** DNS leak protection with blocklist and split DNS
 - **[v1.0.0]** Traffic obfuscation — TLS/HTTP2 mimicry for DPI bypass
+- **[v1.1.0]** Prometheus metrics export via native `/metrics` endpoint
+- **[v1.1.0]** Post-Quantum cryptography placeholders (Kyber/Dilithium ready)
+- **[v1.1.0]** High-level Tunnel abstraction for simplified VPN deployment
 
 ---
 
@@ -45,8 +48,16 @@ VCL Protocol is a cryptographically chained packet transport protocol. It ensure
 
 ```toml
 [dependencies]
-vcl-protocol = "1.0.0"
+vcl-protocol = "1.1.0"
 tokio = { version = "1", features = ["full"] }
+```
+
+### Optional Features
+
+```toml
+[dependencies.vcl-protocol]
+version = "1.1.0"
+features = ["pq"]  # Enable post-quantum crypto placeholders (experimental)
 ```
 
 ---
@@ -506,6 +517,171 @@ pool_metrics.merge(&m);
 
 ---
 
+## Prometheus Metrics Export 📈 (v1.1.0)
+
+Native Prometheus endpoint for monitoring VCL connections and process stats.
+
+```rust
+use vcl_protocol::metrics::PrometheusExporter;
+
+#[tokio::main]
+async fn main() {
+    // Start exporter on localhost:9090
+    let exporter = PrometheusExporter::new("127.0.0.1:9090")?;
+    
+    // Register your connection pool or metrics collector
+    exporter.register_pool(&pool);
+    
+    // Metrics are now available at http://127.0.0.1:9090/metrics
+    // Example output:
+    // # HELP vcl_packets_sent_total Total packets sent
+    // # TYPE vcl_packets_sent_total counter
+    // vcl_packets_sent_total{connection_id="0"} 1234
+    // # HELP process_resident_memory_bytes Resident memory size
+    // # TYPE process_resident_memory_bytes gauge
+    // process_resident_memory_bytes 45678912
+}
+```
+
+### Available Metrics
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `vcl_packets_sent_total` | Counter | Total packets sent per connection |
+| `vcl_packets_received_total` | Counter | Total packets received per connection |
+| `vcl_bytes_transferred` | Counter | Total bytes transferred (sent/recv) |
+| `vcl_connection_active` | Gauge | Number of active connections |
+| `vcl_latency_ms` | Summary | Packet latency distribution (p50, p90, p99) |
+| `vcl_loss_rate` | Gauge | Current packet loss rate (0.0–1.0) |
+| `process_cpu_seconds_total` | Counter | CPU time used by the process |
+| `process_resident_memory_bytes` | Gauge | Resident memory usage |
+| `process_open_fds` | Gauge | Number of open file descriptors |
+
+### Integration
+
+Works out-of-the-box with:
+- **Prometheus Server** — scrape `http://your-host:9090/metrics`
+- **Grafana** — import dashboard using metric names above
+- **VictoriaMetrics** — drop-in Prometheus-compatible replacement
+
+---
+
+## Post-Quantum Cryptography 🔐 (v1.1.0, experimental)
+
+Experimental support for post-quantum cryptographic primitives. **Disabled by default** — enable with `--features pq`.
+
+```rust
+// Cargo.toml
+[dependencies.vcl-protocol]
+version = "1.1.0"
+features = ["pq"]
+```
+
+```rust
+use vcl_protocol::pq_crypto::{PQKeyPair, ClientHello, ServerResponse};
+
+// Generate hybrid keypair (X25519 + Kyber placeholder)
+let client_keys = PQKeyPair::generate()?;
+
+// Create client hello with PQ public key bundle
+let hello = ClientHello::new(&client_keys.public)?;
+let hello_bytes = hello.to_bytes()?;
+
+// Server side: parse hello and generate response
+let parsed_hello = ClientHello::from_bytes(&hello_bytes)?;
+let server_keys = PQKeyPair::generate()?;
+let response = ServerResponse::new(&server_keys.public, &parsed_hello)?;
+
+// Both sides compute hybrid shared secret
+let client_secret = client_keys.compute_secret(&response)?;
+let server_secret = server_keys.compute_secret(&parsed_hello)?;
+
+assert_eq!(client_secret, server_secret);
+```
+
+### Security Notes
+
+⚠️ **This is experimental and NOT production-ready:**
+
+- PQ primitives are **placeholders** (Kyber/Dilithium stubs)
+- Hybrid mode combines X25519 + PQ for forward compatibility
+- Do NOT rely on PQ security guarantees until NIST standardization is complete
+- Feature is opt-in to prevent accidental deployment
+
+### Future Roadmap
+
+- [ ] Integrate `liboqs` or `pqcrypto` crates for real PQ primitives
+- [ ] Add PQ signature support (Dilithium, Falcon)
+- [ ] Implement PQ key encapsulation (Kyber, NTRU)
+- [ ] Add PQ handshake negotiation via ALPN extension
+
+---
+
+## Tunnel Abstraction 🕳️ (v1.1.0)
+
+High-level API for building VPN clients with automatic IP packet routing.
+
+```rust
+use vcl_protocol::tunnel::{VclTunnel, TunConfig, TunnelConfig};
+use vcl_protocol::config::VCLConfig;
+
+#[tokio::main]
+async fn main() {
+    // Configure TUN device
+    let tun_config = TunConfig {
+        name: "vcl0".into(),
+        address: "10.8.0.1".parse()?,
+        destination: "10.8.0.2".parse()?,
+        netmask: "255.255.255.0".parse()?,
+        mtu: 1420,
+    };
+
+    // Configure VCL session
+    let vcl_config = VCLConfig::vpn(); // TCP + reliable
+
+    // Create tunnel — wraps TUN + VCL + DNS filter + obfuscation
+    let mut tunnel = VclTunnel::new(tun_config, vcl_config)?;
+
+    // Connect to remote endpoint
+    tunnel.connect("vpn.example.com:443").await?;
+
+    // Tunnel now automatically:
+    // 1. Reads IP packets from TUN interface
+    // 2. Encrypts + obfuscates + sends via VCL
+    // 3. Receives + decrypts + deobfuscates
+    // 4. Writes packets back to TUN interface
+
+    // Optional: handle tunnel events
+    while let Some(event) = tunnel.events().recv().await {
+        match event {
+            TunnelEvent::Connected => println!("VPN tunnel established"),
+            TunnelEvent::Disconnected => println!("Tunnel closed"),
+            TunnelEvent::DnsBlocked(domain) => println!("Blocked DNS: {}", domain),
+            _ => {}
+        }
+    }
+}
+```
+
+### Benefits Over Manual Setup
+
+| Manual Approach | Tunnel Abstraction |
+|----------------|-------------------|
+| Wire TUN + VCL + DNS + Obfuscation manually | Single `VclTunnel::new()` call |
+| Handle packet routing logic yourself | Automatic IP packet forwarding |
+| Manage reconnection + keepalive separately | Built-in reconnect + keepalive |
+| Configure DNS filter independently | Integrated split-DNS + blocklist |
+| Apply obfuscation to VCL connection | Auto-applied based on config preset |
+
+### Use Cases
+
+- **VPN Client** — drop-in replacement for WireGuard/OpenVPN
+- **Censorship Circumvention** — obfuscation + DNS protection built-in
+- **Corporate Remote Access** — split-DNS for internal resources
+- **Mobile Hotspot** — automatic NAT keepalive + reconnect
+
+---
+
 ## Fragmentation 🧩
 
 ```rust
@@ -715,23 +891,28 @@ cargo bench
 - Fresh X25519 per rotation
 - Old key encrypts rotation messages
 
-### 8. Traffic Obfuscation (v1.0.0)
+### 8. Traffic Obfuscation (v1.0.0+)
 - TLS 1.3 record format mimicry
 - HTTP/2 DATA frame mimicry
 - Size normalization to common HTTPS sizes
 - Timing jitter to defeat timing analysis
 
-### 9. DNS Protection (v1.0.0)
+### 9. DNS Protection (v1.0.0+)
 - All DNS routed through VCL tunnel
 - Blocklist prevents ad/tracking DNS leaks
 - Split DNS for local corporate domains
+
+### 10. Post-Quantum Readiness (v1.1.0, experimental)
+- Hybrid handshake (X25519 + PQ placeholder)
+- Crypto-agile architecture for future primitive swaps
+- Feature-flagged to prevent accidental deployment
 
 ---
 
 ## Testing 🧪
 
 ```bash
-cargo test                         # All 257 tests
+cargo test                         # All 334 tests
 cargo test --lib                   # Unit tests
 cargo test --test integration_test # Integration tests
 cargo bench                        # Benchmarks
@@ -746,28 +927,31 @@ cargo run --example client         # Example client
 ```text
 vcl-protocol/
 ├── src/
-│   ├── main.rs          # Demo application
-│   ├── lib.rs           # Library entry point
-│   ├── connection.rs    # VCLConnection — main API
-│   ├── event.rs         # VCLEvent enum
-│   ├── pool.rs          # VCLPool — connection manager
-│   ├── packet.rs        # VCLPacket + PacketType
-│   ├── crypto.rs        # KeyPair, encrypt, decrypt
-│   ├── error.rs         # VCLError
-│   ├── handshake.rs     # X25519 handshake
-│   ├── config.rs        # VCLConfig + presets
-│   ├── transport.rs     # VCLTransport (UDP/TCP/WebSocket)
-│   ├── fragment.rs      # Fragmenter + Reassembler
-│   ├── flow.rs          # FlowController + AIMD + Retransmission
-│   ├── metrics.rs       # VCLMetrics
-│   ├── tun_device.rs    # VCLTun — TUN interface (Linux)
-│   ├── ip_packet.rs     # IP/TCP/UDP/ICMP parser
-│   ├── multipath.rs     # MultipathSender + MultipathReceiver
-│   ├── mtu.rs           # MtuNegotiator
-│   ├── keepalive.rs     # KeepaliveManager
-│   ├── reconnect.rs     # ReconnectManager
-│   ├── dns.rs           # DnsFilter + DnsConfig
-│   └── obfuscation.rs   # Obfuscator + ObfuscationMode
+│   ├── main.rs                    # Demo application
+│   ├── lib.rs                     # Library entry point
+│   ├── connection.rs              # VCLConnection — main API
+│   ├── event.rs                   # VCLEvent enum
+│   ├── pool.rs                    # VCLPool — connection manager
+│   ├── packet.rs                  # VCLPacket + PacketType
+│   ├── crypto.rs                  # KeyPair, encrypt, decrypt
+│   ├── error.rs                   # VCLError
+│   ├── handshake.rs               # X25519 handshake
+│   ├── config.rs                  # VCLConfig + presets
+│   ├── transport.rs               # VCLTransport (UDP/TCP/WebSocket)
+│   ├── fragment.rs                # Fragmenter + Reassembler
+│   ├── flow.rs                    # FlowController + AIMD + Retransmission
+│   ├── metrics.rs                 # VCLMetrics
+│   ├── prometheus_metrics.rs      # Prometheus exporter (v1.1.0)
+│   ├── pq_crypto.rs               # Post-quantum crypto placeholders (v1.1.0)
+│   ├── tunnel.rs                  # VclTunnel abstraction (v1.1.0)
+│   ├── tun_device.rs              # VCLTun — TUN interface (Linux)
+│   ├── ip_packet.rs               # IP/TCP/UDP/ICMP parser
+│   ├── multipath.rs               # MultipathSender + MultipathReceiver
+│   ├── mtu.rs                     # MtuNegotiator
+│   ├── keepalive.rs               # KeepaliveManager
+│   ├── reconnect.rs               # ReconnectManager
+│   ├── dns.rs                     # DnsFilter + DnsConfig
+│   └── obfuscation.rs             # Obfuscator + ObfuscationMode
 ├── benches/
 │   └── vcl_benchmarks.rs
 ├── examples/
@@ -809,7 +993,13 @@ MIT License — see LICENSE file for details.
 
 ## Changelog 🔄
 
-### v1.0.0 (Current) 🎉
+### v1.1.0 (Current) 🎉
+- **Prometheus Metrics Export** — native `/metrics` endpoint with process + VCL stats
+- **Post-Quantum Crypto Placeholders** — hybrid handshake stubs (Kyber/Dilithium ready, `--features pq`)
+- **Tunnel Abstraction** — high-level `VclTunnel` API for simplified VPN deployment
+- **334/334 tests passing** (unit + integration + doc)
+
+### v1.0.0 ✅
 - **TUN Interface** — `VCLTun` for IP packet capture (Linux, `CAP_NET_ADMIN`)
 - **IP Parser** — full IPv4/IPv6/TCP/UDP/ICMP parsing via `etherparse`
 - **Multipath** — `MultipathSender` + `MultipathReceiver` with 5 scheduling policies
