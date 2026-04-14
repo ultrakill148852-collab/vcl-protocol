@@ -1,7 +1,6 @@
 # VCL Protocol
 
 ⚠️ **Development Branch**
->
 > You're viewing the `main` branch which is under active development.
 > Code here may be unstable or incomplete.
 >
@@ -10,9 +9,9 @@
 [![Crates.io](https://img.shields.io/crates/v/vcl-protocol.svg)](https://crates.io/crates/vcl-protocol)
 [![Docs.rs](https://docs.rs/vcl-protocol/badge.svg)](https://docs.rs/vcl-protocol)
 [![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://www.rust-lang.org)
-[![Tests](https://img.shields.io/badge/tests-286%2F286%20passing-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-334%2F334%20passing-brightgreen.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-v1.0.0%20Stable-green.svg)]()
+[![Status](https://img.shields.io/badge/Status-v1.1.0%20Stable-green.svg)]()
 
 **Verified Commit Link** — Cryptographically chained packet transport protocol
 
@@ -28,7 +27,7 @@
 
 VCL Protocol is a transport protocol where each packet cryptographically links to the previous one, creating an immutable chain of data transmission. Inspired by blockchain principles, optimized for real-time networking.
 
-**v1.0.0** is the production release — adds TUN interface for IP packet capture, full IP/TCP/UDP/ICMP parsing, multipath routing across multiple network interfaces, automatic MTU negotiation, NAT keepalive, automatic reconnection, DNS leak protection, and traffic obfuscation to bypass DPI censorship.
+**v1.1.0** builds upon the stable **v1.0.0** foundation (which introduced TUN interfaces, full IP parsing, multipath routing, MTU negotiation, and traffic obfuscation) and adds **Prometheus metrics export**, **experimental Post-Quantum cryptography placeholders**, and a **high-level Tunnel abstraction** for simplified VPN deployment.
 
 **Published on crates.io:** https://crates.io/crates/vcl-protocol
 **API Documentation:** https://docs.rs/vcl-protocol
@@ -61,6 +60,9 @@ VCL Protocol is a transport protocol where each packet cryptographically links t
 | 📉 Congestion Control | AIMD algorithm with slow start and retransmission |
 | 🔁 Retransmission | Automatic retransmit on timeout with exponential backoff |
 | 📊 Metrics API | `VCLMetrics` aggregates stats across connections and pools |
+| 📈 Prometheus Exporter | Native `/metrics` endpoint with process + VCL stats (CPU, mem, packets) |
+| 🔐 Post-Quantum Ready | Crypto-agile design with PQ primitives placeholder (Kyber/Dilithium) |
+| 🕳️ Tunnel Abstraction | High-level tunnel API over VCL sessions with automatic routing |
 | ⚙️ Config Presets | VPN, Gaming, Streaming, Auto — one line setup |
 | 📝 Tracing Logs | Structured logging via `tracing` crate |
 | 📈 Benchmarks | Performance benchmarks via `criterion` |
@@ -73,7 +75,7 @@ VCL Protocol is a transport protocol where each packet cryptographically links t
 | 🛡️ DNS Leak Protection | Intercept DNS, blocklist, split DNS, response caching |
 | 🎭 Traffic Obfuscation | TLS/HTTP2 mimicry to bypass DPI censorship (МТС, Beeline) |
 | 📖 Full API Docs | Complete documentation on [docs.rs](https://docs.rs/vcl-protocol) |
-| 🧪 Full Test Suite | 257/257 tests passing (unit + integration + doc) |
+| 🧪 Full Test Suite | 334/334 tests passing (unit + integration + doc) |
 
 ---
 
@@ -213,7 +215,7 @@ All send/recv via binary frames — same API as TCP/UDP
 Works through HTTP proxies and firewalls
 ```
 
-### TUN Interface (v1.0.0)
+### TUN Interface (v1.1.0)
 
 ```text
 OS Network Stack
@@ -226,7 +228,7 @@ IP Packet → parse_ip_packet() → ParsedPacket { src, dst, protocol, ... }
 VCLTun::write_packet() → inject back into OS stack
 ```
 
-### Multipath (v1.0.0)
+### Multipath (v1.1.0)
 
 ```text
 MultipathSender (scheduling policies):
@@ -241,7 +243,7 @@ MultipathReceiver:
   Duplicate detection → silently drops redundant copies
 ```
 
-### Traffic Obfuscation (v1.0.0)
+### Traffic Obfuscation (v1.1.0)
 
 ```text
 ObfuscationMode::TlsMimicry   → looks like TLS 1.3 HTTPS
@@ -339,7 +341,7 @@ async fn main() {
 }
 ```
 
-### Obfuscation Example (v1.0.0)
+### Obfuscation Example (v1.1.0)
 
 ```rust
 use vcl_protocol::obfuscation::{Obfuscator, ObfuscationConfig, recommended_mode, ObfuscationMode};
@@ -356,7 +358,7 @@ assert_eq!(restored, data);
 println!("Overhead: {:.1}%", obf.overhead_ratio() * 100.0);
 ```
 
-### Keepalive Example (v1.0.0)
+### Keepalive Example (v1.1.0)
 
 ```rust
 use vcl_protocol::keepalive::{KeepaliveManager, KeepalivePreset, KeepaliveAction};
@@ -378,7 +380,7 @@ loop {
 }
 ```
 
-### DNS Protection Example (v1.0.0)
+### DNS Protection Example (v1.1.0)
 
 ```rust
 use vcl_protocol::dns::{DnsFilter, DnsConfig, DnsAction, DnsQueryType};
@@ -478,44 +480,62 @@ WebSocket transport allows VCL Protocol to work from browsers and through corpor
 - **Max Packet Size:** 65535 bytes
 - **TCP/WS Framing:** 4-byte big-endian length prefix (TCP), binary frames (WS)
 
-### TUN Interface (v1.0.0)
+### TUN Interface (v1.1.0)
 - **Platform:** Linux only (requires `CAP_NET_ADMIN` or root)
 - **Default MTU:** 1420 bytes
 - **IP versions:** IPv4 and IPv6
 - **Crate:** `tun` with async feature
 
-### IP Parsing (v1.0.0)
+### IP Parsing (v1.1.0)
 - **IPv4/IPv6** header parsing via `etherparse`
 - **Protocols:** TCP, UDP, ICMP, ICMPv6, and any other protocol number
 - **Helpers:** `is_dns()`, `is_ping()`, `summary()`
 
-### Multipath (v1.0.0)
+### Multipath (v1.1.0)
 - **Scheduling:** BestPath, RoundRobin, WeightedRoundRobin, Redundant, LowestLatency
 - **Reorder buffer:** up to 256 out-of-order packets
 - **Duplicate detection:** sequence-based
 
-### MTU Negotiation (v1.0.0)
+### MTU Negotiation (v1.1.0)
 - **Algorithm:** Binary search probing
 - **Range:** 576–1500 bytes (configurable up to 9000 for jumbo frames)
 - **VCL overhead:** 149 bytes (Ed25519 + hash + nonce + headers)
 
-### Keepalive (v1.0.0)
+### Keepalive (v1.1.0)
 - **Mobile preset:** 20s interval (МТС/Beeline 30s NAT timeout)
 - **Adaptive:** adjusts interval based on measured RTT
 - **Dead detection:** configurable missed pong count
 
-### DNS Protection (v1.0.0)
+### DNS Protection (v1.1.0)
 - **Upstream:** Cloudflare (1.1.1.1), Google (8.8.8.8), Quad9 (9.9.9.9)
 - **Cache:** TTL-based, up to 1024 entries
 - **Blocklist:** wildcard subdomain matching
 - **Split DNS:** per-domain bypass rules
 
-### Traffic Obfuscation (v1.0.0)
+### Traffic Obfuscation (v1.1.0)
 - **TLS Mimicry:** Content-Type 0x17, Version 0x0303 (TLS 1.3 compat)
 - **HTTP/2 Mimicry:** DATA frame (type 0x00) with stream ID rotation
 - **Size Normalization:** pads to common HTTPS sizes (64–1460 bytes)
 - **XOR Scrambling:** lightweight payload scrambling
 - **Timing Jitter:** pseudo-random delay to disguise traffic patterns
+
+### Prometheus Metrics (v1.1.0)
+- **Endpoint:** `GET /metrics` on configurable address (default `127.0.0.1:9090`)
+- **Format:** Prometheus text exposition format
+- **Metrics:** VCL-specific (packets, bytes, latency, connections) + process stats (CPU, memory, FDs)
+- **Integration:** Works with Grafana, Prometheus Server, VictoriaMetrics
+
+### Post-Quantum Cryptography (v1.1.0, experimental)
+- **Status:** Feature-flagged (`--features pq`), not enabled by default
+- **Design:** Crypto-agile architecture for easy primitive swaps
+- **Placeholders:** Kyber (KEM) and Dilithium (signatures) stubs
+- **Handshake:** Hybrid mode (X25519 + PQ) for forward compatibility
+
+### Tunnel Abstraction (v1.1.0)
+- **API:** `VclTunnel::new(session, config)` high-level wrapper
+- **Function:** Automatic IP packet routing between TUN and VCL session
+- **Integration:** Works with DNS filter, obfuscation, multipath
+- **Use case:** Simplified VPN client deployment
 
 ### Fragmentation
 - **Threshold:** configurable via `VCLConfig::fragment_size` (default 1200 bytes)
@@ -548,13 +568,14 @@ WebSocket transport allows VCL Protocol to work from browsers and through corpor
 - `serde` + `bincode` — Serialization
 - `tracing` — Structured logging
 - `tracing-subscriber` — Log output
+- `prometheus` — Metrics export (optional)
 
 ---
 
 ## 🛠️ Development
 
 ```bash
-cargo test                         # Run all tests (257/257)
+cargo test                         # Run all tests (334/334)
 cargo test --lib                   # Unit tests only
 cargo test --test integration_test # Integration tests only
 cargo bench                        # Run benchmarks
