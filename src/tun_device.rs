@@ -131,14 +131,14 @@ impl VCLTun {
     pub fn create(config: TunConfig) -> Result<Self, VCLError> {
         let mut tun_config = tun::Configuration::default();
         
-        // Use tun_name instead of deprecated name
+        // FIX: Use tun_name instead of deprecated name
         tun_config.tun_name(&config.name);
         
         tun_config
             .address(config.address)
             .destination(config.destination)
             .netmask(config.netmask)
-            // FIX: mtu() now expects u16 in tun 0.7.x
+            // FIX: mtu() now expects u16 in tun crate 0.7.x, config.mtu is already u16
             .mtu(config.mtu)
             .up();
 
