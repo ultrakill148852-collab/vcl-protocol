@@ -131,15 +131,15 @@ impl VCLTun {
     pub fn create(config: TunConfig) -> Result<Self, VCLError> {
         let mut tun_config = tun::Configuration::default();
         
-        // FIX: Use tun_name instead of deprecated name
+        // Use tun_name instead of deprecated name
         tun_config.tun_name(&config.name);
         
         tun_config
             .address(config.address)
             .destination(config.destination)
             .netmask(config.netmask)
-            // FIX: Cast u16 to i32 safely for the crate API
-            .mtu(config.mtu as i32)
+            // FIX: mtu() now expects u16 in tun 0.7.x
+            .mtu(config.mtu)
             .up();
 
         let dev = tun::create_as_async(&tun_config)
@@ -436,16 +436,13 @@ mod tests {
 
     #[test]
     fn test_tun_create_non_linux() {
-        // On non-Linux platforms (including WSL2) should return an error
         #[cfg(not(target_os = "linux"))]
         {
             let result = VCLTun::create(TunConfig::default());
             assert!(result.is_err());
         }
-        // On Linux skip — requires root
         #[cfg(target_os = "linux")]
         {
-            // Just check that config is created
             let c = TunConfig::default();
             assert_eq!(c.mtu, 1420);
         }
