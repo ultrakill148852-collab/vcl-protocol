@@ -102,6 +102,12 @@ pub enum VCLTransport {
         send: SendStream,
         recv: RecvStream,
     },
+    /// QUIC listener — server side, waiting for incoming QUIC connections (requires `quic` feature).
+    #[cfg(feature = "quic")]
+    QuicListener {
+        endpoint: Endpoint,
+        local_addr: SocketAddr,
+    },
 }
 
 impl VCLTransport {
@@ -159,6 +165,7 @@ impl VCLTransport {
     /// Bind a QUIC endpoint to a local address (server side).
     ///
     /// Generates a self-signed certificate for TLS handshake.
+    /// Returns a [`QuicListener`](VCLTransport::QuicListener) which must be passed to [`accept()`](VCLTransport::accept).
     /// Requires the `quic` feature to be enabled in `Cargo.toml`.
     ///
     /// # Example
@@ -166,7 +173,8 @@ impl VCLTransport {
     /// #[cfg(feature = "quic")]
     /// # async fn example() {
     /// use vcl_protocol::transport::VCLTransport;
-    /// let quic = VCLTransport::bind_quic("127.0.0.1:8083").await.unwrap();
+    /// let listener = VCLTransport::bind_quic("127.0.0.1:8083").await.unwrap();
+    /// let server_conn = listener.accept().await.unwrap();
     /// # }
     /// ```
     #[cfg(feature = "quic")]
@@ -197,19 +205,8 @@ impl VCLTransport {
         let endpoint = Endpoint::server(server_config, bind_addr)
             .map_err(|e| VCLError::IoError(e.to_string()))?;
 
-        info!(addr = %bind_addr, "QUIC transport bound");
-
-        // Wait for first incoming connection (blocking accept for demo purposes)
-        let connecting = endpoint.accept().await
-            .ok_or_else(|| VCLError::IoError("QUIC endpoint closed".into()))?;
-        
-        let conn = connecting.await
-            .map_err(|e| VCLError::IoError(format!("QUIC connection failed: {}", e)))?;
-        
-        let (send, recv) = conn.open_bi().await
-            .map_err(|e| VCLError::IoError(format!("QUIC stream open failed: {}", e)))?;
-
-        Ok(VCLTransport::Quic { endpoint, connection: conn, send, recv })
+        info!(addr = %bind_addr, "QUIC transport bound (listener)");
+        Ok(VCLTransport::QuicListener { endpoint, local_addr: bind_addr })
     }
 
     /// Connect a QUIC client to a remote address.
@@ -251,7 +248,7 @@ impl VCLTransport {
     ///
     /// Works for [`TcpListener`](VCLTransport::TcpListener),
     /// [`WebSocketListener`](VCLTransport::WebSocketListener), and
-    /// [`bind_quic`](VCLTransport::bind_quic) is already accepting inside.
+    /// [`QuicListener`](VCLTransport::QuicListener).
     pub async fn accept(&self) -> Result<Self, VCLError> {
         match self {
             VCLTransport::TcpListener { listener, .. } => {
@@ -268,11 +265,18 @@ impl VCLTransport {
                 Ok(VCLTransport::WebSocketServer { stream: ws_stream, peer_addr })
             }
             #[cfg(feature = "quic")]
-            VCLTransport::Quic { .. } => {
-                // QUIC accept happens inside bind_quic for this simple implementation
-                Err(VCLError::InvalidPacket(
-                    "QUIC connections are accepted during bind_quic()".to_string()
-                ))
+            VCLTransport::QuicListener { endpoint, .. } => {
+                let connecting = endpoint.accept().await
+                    .ok_or_else(|| VCLError::IoError("QUIC endpoint closed".into()))?;
+                
+                let conn = connecting.await
+                    .map_err(|e| VCLError::IoError(format!("QUIC connection failed: {}", e)))?;
+                
+                let (send, recv) = conn.open_bi().await
+                    .map_err(|e| VCLError::IoError(format!("QUIC stream open failed: {}", e)))?;
+
+                info!("QUIC connection accepted");
+                Ok(VCLTransport::Quic { endpoint: endpoint.clone(), connection: conn, send, recv })
             }
             _ => Err(VCLError::InvalidPacket(
                 "accept() called on non-listener transport".to_string(),
@@ -309,7 +313,7 @@ impl VCLTransport {
         }
     }
 
-    // ── Send / Recv ──────────────────────────────────────────────────────────
+    // ─ Send / Recv ──────────────────────────────────────────────────────────
 
     /// Send raw bytes to the peer.
     ///
@@ -360,15 +364,11 @@ impl VCLTransport {
             VCLTransport::TcpListener { .. } 
             | VCLTransport::WebSocketListener { .. } 
             #[cfg(feature = "quic")]
-            | VCLTransport::Quic { .. } if false => { // Hack to keep match exhaustive if logic changes
+            | VCLTransport::QuicListener { .. } => {
                 Err(VCLError::InvalidPacket(
                     "send_raw() called on listener — call accept() first".to_string(),
                 ))
             }
-            // Fallback for listeners if Quic arm wasn't matched above due to feature flags
-            _ => Err(VCLError::InvalidPacket(
-                "send_raw() called on listener or invalid state".to_string(),
-            ))
         }
     }
 
@@ -464,7 +464,9 @@ impl VCLTransport {
                 Ok((buf, placeholder))
             }
             VCLTransport::TcpListener { .. } 
-            | VCLTransport::WebSocketListener { .. } => {
+            | VCLTransport::WebSocketListener { .. } 
+            #[cfg(feature = "quic")]
+            | VCLTransport::QuicListener { .. } => {
                 Err(VCLError::InvalidPacket(
                     "recv_raw() called on listener — call accept() first".to_string(),
                 ))
@@ -472,7 +474,7 @@ impl VCLTransport {
         }
     }
 
-    // ─── Info ─────────────────────────────────────────────────────────────────
+    // ─── Info ────────────────────────────────────────────────────────────────
 
     /// Returns the local address this transport is bound to.
     pub fn local_addr(&self) -> Option<SocketAddr> {
@@ -485,6 +487,8 @@ impl VCLTransport {
             VCLTransport::WebSocketClient { .. }       => None,
             #[cfg(feature = "quic")]
             VCLTransport::Quic { endpoint, .. } => endpoint.local_addr().ok(),
+            #[cfg(feature = "quic")]
+            VCLTransport::QuicListener { local_addr, .. } => Some(*local_addr),
         }
     }
 
@@ -498,7 +502,9 @@ impl VCLTransport {
             | VCLTransport::WebSocketListener { .. }
             | VCLTransport::WebSocketClient { .. }     
             #[cfg(feature = "quic")]
-            | VCLTransport::Quic { .. }                => None,
+            | VCLTransport::Quic { .. }
+            #[cfg(feature = "quic")]
+            | VCLTransport::QuicListener { .. }        => None,
         }
     }
 
@@ -519,7 +525,8 @@ impl VCLTransport {
             | VCLTransport::WebSocketServer { .. }
             | VCLTransport::WebSocketListener { .. } => TransportMode::Tcp,
             #[cfg(feature = "quic")]
-            VCLTransport::Quic { .. } => TransportMode::Udp, // QUIC runs over UDP
+            VCLTransport::Quic { .. } 
+            | VCLTransport::QuicListener { .. } => TransportMode::Udp, // QUIC runs over UDP
         }
     }
 
@@ -549,7 +556,7 @@ impl VCLTransport {
     /// Returns `true` if this is a QUIC transport.
     #[cfg(feature = "quic")]
     pub fn is_quic(&self) -> bool {
-        matches!(self, VCLTransport::Quic { .. })
+        matches!(self, VCLTransport::Quic { .. } | VCLTransport::QuicListener { .. })
     }
 }
 
@@ -742,27 +749,55 @@ mod tests {
 
     #[cfg(feature = "quic")]
     #[tokio::test]
-    async fn test_quic_bind_and_connect() {
-        // Start server
-        let server = VCLTransport::bind_quic("127.0.0.1:0").await.unwrap();
-        let server_addr = server.local_addr().unwrap().to_string();
+    async fn test_quic_bind_and_accept() {
+        let listener = VCLTransport::bind_quic("127.0.0.1:0").await.unwrap();
+        assert!(listener.is_quic());
+        let local_addr = listener.local_addr().unwrap();
         
-        // Note: In this simple impl, bind_quic accepts one connection immediately.
-        // For a real server, we'd loop accept. Here we just test the client connect part
-        // assuming the server from bind_quic is ready (which it is, as it accepted internally).
-        // To test properly, we need a separate server task. 
-        // Simplified test: Just ensure bind/connect compiles and types match.
-        
-        // Real integration test would spawn server in background:
-        /*
-        tokio::spawn(async move {
-             let _s = VCLTransport::bind_quic("127.0.0.1:0").await.unwrap();
-             // Keep alive
-             tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+        // Spawn server task to accept
+        let server_task = tokio::spawn(async move {
+            listener.accept().await.unwrap()
         });
-        */
-       
-       // For now, just checking the methods exist and return correct types via compilation
-       assert!(server.is_quic());
+
+        // Give server time to start
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        // Connect client
+        let client_addr = format!("{}", local_addr);
+        let mut client = VCLTransport::connect_quic(&client_addr).await.unwrap();
+        assert!(client.is_quic());
+
+        // Wait for server to accept
+        let mut server = server_task.await.unwrap();
+        assert!(server.is_quic());
+
+        // Test send/recv
+        client.send_raw(b"hello quic").await.unwrap();
+        let (data, _) = server.recv_raw().await.unwrap();
+        assert_eq!(data, b"hello quic");
+    }
+
+    #[cfg(feature = "quic")]
+    #[tokio::test]
+    async fn test_quic_multiple_messages() {
+        let listener = VCLTransport::bind_quic("127.0.0.1:0").await.unwrap();
+        let local_addr = listener.local_addr().unwrap();
+        
+        let server_task = tokio::spawn(async move {
+            listener.accept().await.unwrap()
+        });
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        let client_addr = format!("{}", local_addr);
+        let mut client = VCLTransport::connect_quic(&client_addr).await.unwrap();
+        let mut server = server_task.await.unwrap();
+
+        for i in 0..5u8 {
+            let msg = vec![i; 150];
+            client.send_raw(&msg).await.unwrap();
+            let (data, _) = server.recv_raw().await.unwrap();
+            assert_eq!(data, msg);
+        }
     }
 }
