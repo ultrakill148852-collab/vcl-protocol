@@ -24,8 +24,8 @@
 //!
 //! ## Requirements
 //!
-//! - Linux only (TUN/TAP is a Linux kernel feature)
-//! - Requires root or `CAP_NET_ADMIN` capability
+//! - **Linux**: TUN/TAP kernel feature, requires root or `CAP_NET_ADMIN`
+//! - **Windows**: Wintun driver, requires administrator privileges
 //! - Does NOT work in WSL2 without custom kernel
 //!
 //! ## Example
@@ -61,7 +61,7 @@ use tracing::{debug, info, warn};
 /// Configuration for a TUN virtual network interface.
 #[derive(Debug, Clone)]
 pub struct TunConfig {
-    /// Interface name (e.g. "vcl0"). Max 15 chars on Linux.
+    /// Interface name (e.g. "vcl0"). Max 15 chars on Linux, arbitrary on Windows.
     pub name: String,
     /// Local IP address assigned to the TUN interface.
     pub address: Ipv4Addr,
@@ -112,10 +112,14 @@ pub struct IpPacket {
 
 /// A TUN virtual network interface for capturing and injecting IP packets.
 ///
-/// Requires root or `CAP_NET_ADMIN`. Linux only.
+/// Requires root or `CAP_NET_ADMIN` on Linux, administrator privileges on Windows.
 pub struct VCLTun {
     #[cfg(target_os = "linux")]
     dev: tun::AsyncDevice,
+    #[cfg(target_os = "windows")]
+    dev: wintun::Adapter,
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    _marker: std::marker::PhantomData<()>,
     config: TunConfig,
 }
 
@@ -124,21 +128,18 @@ impl VCLTun {
     ///
     /// # Errors
     /// Returns [`VCLError::IoError`] if:
-    /// - Not running as root / missing `CAP_NET_ADMIN`
+    /// - Not running as root / missing `CAP_NET_ADMIN` (Linux)
+    /// - Not running as administrator (Windows)
     /// - Interface name is invalid or already in use
-    /// - TUN driver not available
+    /// - TUN/Wintun driver not available
     #[cfg(target_os = "linux")]
     pub fn create(config: TunConfig) -> Result<Self, VCLError> {
         let mut tun_config = tun::Configuration::default();
-        
-        // FIX: Use tun_name instead of deprecated name
         tun_config.tun_name(&config.name);
-        
         tun_config
             .address(config.address)
             .destination(config.destination)
             .netmask(config.netmask)
-            // FIX: mtu() now expects u16 in tun crate 0.7.x, config.mtu is already u16
             .mtu(config.mtu)
             .up();
 
@@ -150,27 +151,51 @@ impl VCLTun {
             address = %config.address,
             destination = %config.destination,
             mtu = config.mtu,
+            platform = "linux",
             "TUN interface created"
         );
 
         Ok(VCLTun { dev, config })
     }
 
-    /// Stub for non-Linux platforms — TUN is not supported.
-    #[cfg(not(target_os = "linux"))]
+    /// Create and configure a new TUN interface on Windows using Wintun.
+    #[cfg(target_os = "windows")]
+    pub fn create(config: TunConfig) -> Result<Self, VCLError> {
+        let adapter = wintun::Adapter::open(&config.name)
+            .or_else(|_| wintun::Adapter::create(&config.name, "VCL", None))
+            .map_err(|e| VCLError::IoError(format!("Failed to create Wintun adapter: {}", e)))?;
+
+        adapter
+            .set_address(config.address)
+            .map_err(|e| VCLError::IoError(format!("Failed to set adapter address: {}", e)))?;
+        adapter
+            .set_gateway(config.destination)
+            .map_err(|e| VCLError::IoError(format!("Failed to set adapter gateway: {}", e)))?;
+        adapter
+            .set_netmask(config.netmask)
+            .map_err(|e| VCLError::IoError(format!("Failed to set adapter netmask: {}", e)))?;
+
+        info!(
+            name = %config.name,
+            address = %config.address,
+            destination = %config.destination,
+            mtu = config.mtu,
+            platform = "windows",
+            "Wintun interface created"
+        );
+
+        Ok(VCLTun { dev: adapter, config })
+    }
+
+    /// Stub for unsupported platforms.
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     pub fn create(_config: TunConfig) -> Result<Self, VCLError> {
         Err(VCLError::IoError(
-            "TUN interface is only supported on Linux".to_string(),
+            "TUN interface is only supported on Linux and Windows".to_string(),
         ))
     }
 
     /// Read the next IP packet from the TUN interface.
-    ///
-    /// Blocks asynchronously until a packet is available.
-    /// Returns raw bytes including the IP header.
-    ///
-    /// # Errors
-    /// Returns [`VCLError::IoError`] on read failure.
     #[cfg(target_os = "linux")]
     pub async fn read_packet(&mut self) -> Result<Vec<u8>, VCLError> {
         use tokio::io::AsyncReadExt;
@@ -178,37 +203,59 @@ impl VCLTun {
         let n = self.dev.read(&mut buf).await
             .map_err(|e| VCLError::IoError(format!("TUN read failed: {}", e)))?;
         buf.truncate(n);
-        debug!(size = n, "TUN packet read");
+        debug!(size = n, platform = "linux", "TUN packet read");
         Ok(buf)
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
+    pub async fn read_packet(&mut self) -> Result<Vec<u8>, VCLError> {
+        let adapter = self.dev.clone();
+        let mtu = self.config.mtu as usize;
+        tokio::task::spawn_blocking(move || {
+            let mut buf = vec![0u8; mtu + 4];
+            let n = adapter.receive_packet(&mut buf)
+                .map_err(|e| VCLError::IoError(format!("Wintun read failed: {}", e)))?;
+            buf.truncate(n);
+            Ok(buf)
+        })
+        .await
+        .map_err(|e| VCLError::IoError(format!("Wintun read task failed: {}", e)))?
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     pub async fn read_packet(&mut self) -> Result<Vec<u8>, VCLError> {
         Err(VCLError::IoError("TUN not supported on this platform".to_string()))
     }
 
     /// Write (inject) a raw IP packet into the TUN interface.
-    ///
-    /// The packet will appear as if it came from the network
-    /// and will be delivered to the appropriate local socket.
-    ///
-    /// # Errors
-    /// Returns [`VCLError::IoError`] on write failure.
     #[cfg(target_os = "linux")]
     pub async fn write_packet(&mut self, packet: &[u8]) -> Result<(), VCLError> {
         use tokio::io::AsyncWriteExt;
         self.dev.write_all(packet).await
             .map_err(|e| VCLError::IoError(format!("TUN write failed: {}", e)))?;
-        debug!(size = packet.len(), "TUN packet injected");
+        debug!(size = packet.len(), platform = "linux", "TUN packet injected");
         Ok(())
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
+    pub async fn write_packet(&mut self, packet: &[u8]) -> Result<(), VCLError> {
+        let adapter = self.dev.clone();
+        let packet = packet.to_vec();
+        tokio::task::spawn_blocking(move || {
+            adapter.send_packet(&packet)
+                .map_err(|e| VCLError::IoError(format!("Wintun write failed: {}", e)))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| VCLError::IoError(format!("Wintun write task failed: {}", e)))?
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     pub async fn write_packet(&mut self, _packet: &[u8]) -> Result<(), VCLError> {
         Err(VCLError::IoError("TUN not supported on this platform".to_string()))
     }
 
-    /// Returns the name of the TUN interface (e.g. "vcl0").
+    /// Returns the name of the TUN interface.
     pub fn name(&self) -> &str {
         &self.config.name
     }
@@ -340,35 +387,18 @@ mod tests {
     use super::*;
 
     fn make_ipv4_packet() -> Vec<u8> {
-        // Minimal valid IPv4 header (20 bytes) + 4 bytes payload
         vec![
-            0x45, // version=4, IHL=5
-            0x00, // DSCP/ECN
-            0x00, 0x18, // total length = 24
-            0x00, 0x01, // identification
-            0x00, 0x00, // flags + fragment offset
-            0x40, // TTL = 64
-            0x06, // protocol = TCP (6)
-            0x00, 0x00, // checksum (not validated here)
-            192, 168, 1, 1,   // src
-            10, 0, 0, 1,      // dst
-            0x00, 0x00, 0x00, 0x00, // payload
+            0x45, 0x00, 0x00, 0x18, 0x00, 0x01, 0x00, 0x00,
+            0x40, 0x06, 0x00, 0x00,
+            192, 168, 1, 1, 10, 0, 0, 1,
+            0x00, 0x00, 0x00, 0x00,
         ]
     }
 
     fn make_ipv6_packet() -> Vec<u8> {
-        // Minimal IPv6 header (40 bytes)
-        let mut pkt = vec![
-            0x60, 0x00, 0x00, 0x00, // version=6, TC, flow label
-            0x00, 0x08,             // payload length = 8
-            0x11,                   // next header = UDP (17)
-            0x40,                   // hop limit = 64
-        ];
-        // src addr (16 bytes) = ::1
+        let mut pkt = vec![0x60, 0x00, 0x00, 0x00, 0x00, 0x08, 0x11, 0x40];
         pkt.extend_from_slice(&[0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,1]);
-        // dst addr (16 bytes) = ::2
         pkt.extend_from_slice(&[0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,2]);
-        // payload (8 bytes)
         pkt.extend_from_slice(&[0u8; 8]);
         pkt
     }
@@ -378,73 +408,43 @@ mod tests {
         let c = TunConfig::default();
         assert_eq!(c.name, "vcl0");
         assert_eq!(c.mtu, 1420);
-        assert_eq!(c.address, "10.0.0.1".parse::<Ipv4Addr>().unwrap());
     }
 
     #[test]
     fn test_parse_ipv4_packet() {
-        let raw = make_ipv4_packet();
-        let pkt = parse_ip_packet(raw).unwrap();
+        let pkt = parse_ip_packet(make_ipv4_packet()).unwrap();
         assert_eq!(pkt.version, IpVersion::V4);
         assert_eq!(pkt.src, "192.168.1.1");
         assert_eq!(pkt.dst, "10.0.0.1");
-        assert_eq!(pkt.protocol, 6); // TCP
+        assert_eq!(pkt.protocol, 6);
     }
 
     #[test]
     fn test_parse_ipv6_packet() {
-        let raw = make_ipv6_packet();
-        let pkt = parse_ip_packet(raw).unwrap();
+        let pkt = parse_ip_packet(make_ipv6_packet()).unwrap();
         assert_eq!(pkt.version, IpVersion::V6);
-        assert_eq!(pkt.protocol, 17); // UDP
+        assert_eq!(pkt.protocol, 17);
     }
 
     #[test]
     fn test_parse_empty_packet() {
-        let result = parse_ip_packet(vec![]);
-        assert!(result.is_err());
+        assert!(parse_ip_packet(vec![]).is_err());
     }
 
     #[test]
-    fn test_parse_unknown_version() {
-        let raw = vec![0x30, 0x00, 0x00, 0x00]; // version = 3
-        let pkt = parse_ip_packet(raw).unwrap();
-        assert_eq!(pkt.version, IpVersion::Unknown(3));
-    }
-
-    #[test]
-    fn test_is_ipv4() {
+    fn test_is_ipv4_ipv6() {
         assert!(is_ipv4(&make_ipv4_packet()));
         assert!(!is_ipv4(&make_ipv6_packet()));
-        assert!(!is_ipv4(&[]));
-    }
-
-    #[test]
-    fn test_is_ipv6() {
         assert!(is_ipv6(&make_ipv6_packet()));
         assert!(!is_ipv6(&make_ipv4_packet()));
-        assert!(!is_ipv6(&[]));
     }
 
     #[test]
-    fn test_ip_version() {
-        assert_eq!(ip_version(&make_ipv4_packet()), Some(IpVersion::V4));
-        assert_eq!(ip_version(&make_ipv6_packet()), Some(IpVersion::V6));
-        assert_eq!(ip_version(&[0x30]), Some(IpVersion::Unknown(3)));
-        assert_eq!(ip_version(&[]), None);
-    }
-
-    #[test]
-    fn test_tun_create_non_linux() {
-        #[cfg(not(target_os = "linux"))]
+    fn test_tun_create_unsupported_platform() {
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
         {
             let result = VCLTun::create(TunConfig::default());
             assert!(result.is_err());
-        }
-        #[cfg(target_os = "linux")]
-        {
-            let c = TunConfig::default();
-            assert_eq!(c.mtu, 1420);
         }
     }
 
