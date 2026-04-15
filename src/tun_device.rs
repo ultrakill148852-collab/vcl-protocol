@@ -387,18 +387,35 @@ mod tests {
     use super::*;
 
     fn make_ipv4_packet() -> Vec<u8> {
+        // Minimal valid IPv4 header (20 bytes) + 4 bytes payload
         vec![
-            0x45, 0x00, 0x00, 0x18, 0x00, 0x01, 0x00, 0x00,
-            0x40, 0x06, 0x00, 0x00,
-            192, 168, 1, 1, 10, 0, 0, 1,
-            0x00, 0x00, 0x00, 0x00,
+            0x45, // version=4, IHL=5
+            0x00, // DSCP/ECN
+            0x00, 0x18, // total length = 24
+            0x00, 0x01, // identification
+            0x00, 0x00, // flags + fragment offset
+            0x40, // TTL = 64
+            0x06, // protocol = TCP (6)
+            0x00, 0x00, // checksum (not validated here)
+            192, 168, 1, 1,   // src
+            10, 0, 0, 1,      // dst
+            0x00, 0x00, 0x00, 0x00, // payload
         ]
     }
 
     fn make_ipv6_packet() -> Vec<u8> {
-        let mut pkt = vec![0x60, 0x00, 0x00, 0x00, 0x00, 0x08, 0x11, 0x40];
+        // Minimal IPv6 header (40 bytes)
+        let mut pkt = vec![
+            0x60, 0x00, 0x00, 0x00, // version=6, TC, flow label
+            0x00, 0x08,             // payload length = 8
+            0x11,                   // next header = UDP (17)
+            0x40,                   // hop limit = 64
+        ];
+        // src addr (16 bytes) = ::1
         pkt.extend_from_slice(&[0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,1]);
+        // dst addr (16 bytes) = ::2
         pkt.extend_from_slice(&[0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,2]);
+        // payload (8 bytes)
         pkt.extend_from_slice(&[0u8; 8]);
         pkt
     }
@@ -408,43 +425,73 @@ mod tests {
         let c = TunConfig::default();
         assert_eq!(c.name, "vcl0");
         assert_eq!(c.mtu, 1420);
+        assert_eq!(c.address, "10.0.0.1".parse::<Ipv4Addr>().unwrap());
     }
 
     #[test]
     fn test_parse_ipv4_packet() {
-        let pkt = parse_ip_packet(make_ipv4_packet()).unwrap();
+        let raw = make_ipv4_packet();
+        let pkt = parse_ip_packet(raw).unwrap();
         assert_eq!(pkt.version, IpVersion::V4);
         assert_eq!(pkt.src, "192.168.1.1");
         assert_eq!(pkt.dst, "10.0.0.1");
-        assert_eq!(pkt.protocol, 6);
+        assert_eq!(pkt.protocol, 6); // TCP
     }
 
     #[test]
     fn test_parse_ipv6_packet() {
-        let pkt = parse_ip_packet(make_ipv6_packet()).unwrap();
+        let raw = make_ipv6_packet();
+        let pkt = parse_ip_packet(raw).unwrap();
         assert_eq!(pkt.version, IpVersion::V6);
-        assert_eq!(pkt.protocol, 17);
+        assert_eq!(pkt.protocol, 17); // UDP
     }
 
     #[test]
     fn test_parse_empty_packet() {
-        assert!(parse_ip_packet(vec![]).is_err());
+        let result = parse_ip_packet(vec![]);
+        assert!(result.is_err());
     }
 
     #[test]
-    fn test_is_ipv4_ipv6() {
+    fn test_parse_unknown_version() {
+        let raw = vec![0x30, 0x00, 0x00, 0x00]; // version = 3
+        let pkt = parse_ip_packet(raw).unwrap();
+        assert_eq!(pkt.version, IpVersion::Unknown(3));
+    }
+
+    #[test]
+    fn test_is_ipv4() {
         assert!(is_ipv4(&make_ipv4_packet()));
         assert!(!is_ipv4(&make_ipv6_packet()));
-        assert!(is_ipv6(&make_ipv6_packet()));
-        assert!(!is_ipv6(&make_ipv4_packet()));
+        assert!(!is_ipv4(&[]));
     }
 
     #[test]
-    fn test_tun_create_unsupported_platform() {
-        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    fn test_is_ipv6() {
+        assert!(is_ipv6(&make_ipv6_packet()));
+        assert!(!is_ipv6(&make_ipv4_packet()));
+        assert!(!is_ipv6(&[]));
+    }
+
+    #[test]
+    fn test_ip_version() {
+        assert_eq!(ip_version(&make_ipv4_packet()), Some(IpVersion::V4));
+        assert_eq!(ip_version(&make_ipv6_packet()), Some(IpVersion::V6));
+        assert_eq!(ip_version(&[0x30]), Some(IpVersion::Unknown(3)));
+        assert_eq!(ip_version(&[]), None);
+    }
+
+    #[test]
+    fn test_tun_create_non_linux() {
+        #[cfg(not(target_os = "linux"))]
         {
             let result = VCLTun::create(TunConfig::default());
             assert!(result.is_err());
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let c = TunConfig::default();
+            assert_eq!(c.mtu, 1420);
         }
     }
 
