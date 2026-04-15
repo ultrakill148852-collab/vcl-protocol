@@ -1,3 +1,5 @@
+#![cfg(feature = "pq")]
+
 //! # VCL Post-Quantum Cryptography
 //!
 //! Hybrid key exchange combining classical X25519 with post-quantum
