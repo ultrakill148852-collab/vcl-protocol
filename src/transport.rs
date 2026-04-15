@@ -38,18 +38,19 @@ use tokio_tungstenite::{
 };
 use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
-use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 // QUIC Dependencies
 #[cfg(feature = "quic")]
-use quinn::{Endpoint, Connection, RecvStream, SendStream, ServerConfig, ClientConfig, VarInt};
+use quinn::{Endpoint, Connection, RecvStream, SendStream, ServerConfig, ClientConfig};
 #[cfg(feature = "quic")]
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 #[cfg(feature = "quic")]
 use rustls::client::danger::{ServerCertVerifier, ServerCertVerified, HandshakeSignatureValid};
 #[cfg(feature = "quic")]
 use rcgen::{generate_simple_self_signed, CertifiedKey};
+#[cfg(feature = "quic")]
+use std::sync::Arc;
 
 const UDP_MAX_SIZE: usize = 65535;
 const TCP_HEADER_SIZE: usize = 4;
@@ -313,7 +314,7 @@ impl VCLTransport {
         }
     }
 
-    // ─ Send / Recv ──────────────────────────────────────────────────────────
+    // ─── Send / Recv ─────────────────────────────────────────────────────────
 
     /// Send raw bytes to the peer.
     ///
@@ -362,9 +363,13 @@ impl VCLTransport {
                 Ok(())
             }
             VCLTransport::TcpListener { .. } 
-            | VCLTransport::WebSocketListener { .. } 
+            | VCLTransport::WebSocketListener { .. } => {
+                Err(VCLError::InvalidPacket(
+                    "send_raw() called on listener — call accept() first".to_string(),
+                ))
+            }
             #[cfg(feature = "quic")]
-            | VCLTransport::QuicListener { .. } => {
+            VCLTransport::QuicListener { .. } => {
                 Err(VCLError::InvalidPacket(
                     "send_raw() called on listener — call accept() first".to_string(),
                 ))
@@ -464,9 +469,13 @@ impl VCLTransport {
                 Ok((buf, placeholder))
             }
             VCLTransport::TcpListener { .. } 
-            | VCLTransport::WebSocketListener { .. } 
+            | VCLTransport::WebSocketListener { .. } => {
+                Err(VCLError::InvalidPacket(
+                    "recv_raw() called on listener — call accept() first".to_string(),
+                ))
+            }
             #[cfg(feature = "quic")]
-            | VCLTransport::QuicListener { .. } => {
+            VCLTransport::QuicListener { .. } => {
                 Err(VCLError::InvalidPacket(
                     "recv_raw() called on listener — call accept() first".to_string(),
                 ))
@@ -474,7 +483,7 @@ impl VCLTransport {
         }
     }
 
-    // ─── Info ────────────────────────────────────────────────────────────────
+    // ─── Info ─────────────────────────────────────────────────────────────────
 
     /// Returns the local address this transport is bound to.
     pub fn local_addr(&self) -> Option<SocketAddr> {
@@ -500,11 +509,11 @@ impl VCLTransport {
             VCLTransport::WebSocketServer { peer_addr, .. } => Some(*peer_addr),
             VCLTransport::TcpListener { .. }
             | VCLTransport::WebSocketListener { .. }
-            | VCLTransport::WebSocketClient { .. }     
+            | VCLTransport::WebSocketClient { .. }     => None,
             #[cfg(feature = "quic")]
-            | VCLTransport::Quic { .. }
+            VCLTransport::Quic { .. } => None,
             #[cfg(feature = "quic")]
-            | VCLTransport::QuicListener { .. }        => None,
+            VCLTransport::QuicListener { .. } => None,
         }
     }
 
