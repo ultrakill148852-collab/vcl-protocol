@@ -2,11 +2,11 @@
 name = "vcl-protocol"
 version = "1.5.0"
 edition = "2021"
-description = "Cryptographically chained packet transport protocol with SHA-256 integrity, Ed25519 signatures, XChaCha20-Poly1305 encryption, QUIC support, and cross-platform TUN (Linux/Windows)"
+description = "Cryptographically chained packet transport with QUIC, cross-platform TUN, and bug fixes"
 license = "MIT"
 repository = "https://github.com/ultrakill148852-collab/vcl-protocol"
 authors = ["ultrakill148852-collab"]
-keywords = ["crypto", "networking", "vpn", "udp", "secure", "quic", "wintun"]
+keywords = ["crypto", "networking", "vpn", "quic", "wintun"]
 categories = ["cryptography", "network-programming"]
 readme = "README.md"
 documentation = "https://docs.rs/vcl-protocol"
