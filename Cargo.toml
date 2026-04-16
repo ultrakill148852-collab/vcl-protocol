@@ -2,11 +2,11 @@
 name = "vcl-protocol"
 version = "1.5.0"
 edition = "2021"
-description = "Cryptographically chained packet transport protocol with SHA-256 integrity, Ed25519 signatures, XChaCha20-Poly1305 encryption, and QUIC support"
+description = "Cryptographically chained packet transport protocol with SHA-256 integrity, Ed25519 signatures, XChaCha20-Poly1305 encryption, QUIC support, and cross-platform TUN (Linux/Windows)"
 license = "MIT"
 repository = "https://github.com/ultrakill148852-collab/vcl-protocol"
 authors = ["ultrakill148852-collab"]
-keywords = ["crypto", "networking", "vpn", "udp", "secure", "quic"]
+keywords = ["crypto", "networking", "vpn", "udp", "secure", "quic", "wintun"]
 categories = ["cryptography", "network-programming"]
 readme = "README.md"
 documentation = "https://docs.rs/vcl-protocol"
@@ -16,6 +16,7 @@ default = ["ws"]
 ws = ["dep:tokio-tungstenite"]
 quic = ["dep:quinn", "dep:rustls", "dep:rcgen"]
 pq = ["dep:pqcrypto-kyber", "dep:pqcrypto-traits"]
+wintun = ["dep:wintun"]
 
 [dependencies]
 # Cryptography
@@ -50,8 +51,15 @@ tracing-subscriber = "0.3"
 tun = { version = "0.7", features = ["async"] }
 etherparse = "0.15"
 
+# Windows TUN Support (Optional)
+wintun = { version = "0.3", optional = true }
+
 # Metrics
 prometheus = { version = "0.13", features = ["process"] }
+
+# Windows-specific dependencies (automatically included on Windows)
+[target.'cfg(windows)'.dependencies]
+wintun = "0.3"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
