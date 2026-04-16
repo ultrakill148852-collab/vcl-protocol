@@ -9,9 +9,9 @@
 [![Crates.io](https://img.shields.io/crates/v/vcl-protocol.svg)](https://crates.io/crates/vcl-protocol)
 [![Docs.rs](https://docs.rs/vcl-protocol/badge.svg)](https://docs.rs/vcl-protocol)
 [![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://www.rust-lang.org)
-[![Tests](https://img.shields.io/badge/tests-334%2F334%20passing-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-343%2F343%20passing-brightgreen.svg)]()
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-v1.1.0%20Stable-green.svg)]()
+[![Status](https://img.shields.io/badge/Status-v1.5.0%20Stable-green.svg)]()
 
 **Verified Commit Link** — Cryptographically chained packet transport protocol
 
@@ -27,7 +27,7 @@
 
 VCL Protocol is a transport protocol where each packet cryptographically links to the previous one, creating an immutable chain of data transmission. Inspired by blockchain principles, optimized for real-time networking.
 
-**v1.1.0** builds upon the stable **v1.0.0** foundation and adds **Prometheus metrics export** (`prometheus_metrics.rs`), **Post-Quantum cryptography** (`pq_crypto.rs`), and a **high-level Tunnel abstraction**.
+**v1.5.0** builds upon the stable **v1.1.0** foundation and adds **QUIC transport support**, **cross-platform TUN (Linux + Windows via Wintun)**, **Prometheus metrics export**, **experimental Post-Quantum cryptography (Hybrid X25519+Kyber)**, and a **high-level Tunnel abstraction** with ready-made presets.
 
 **Published on crates.io:** https://crates.io/crates/vcl-protocol
 **API Documentation:** https://docs.rs/vcl-protocol
@@ -49,7 +49,8 @@ VCL Protocol is a transport protocol where each packet cryptographically links t
 | ⚡ UDP Transport | Low latency, high performance |
 | 🔌 TCP Transport | Reliable ordered delivery for VPN scenarios |
 | 🌐 WebSocket Transport | Browser-compatible, works through HTTP proxies |
-| 🔀 Transport Abstraction | Single API works with UDP, TCP, and WebSocket |
+| 🔀 QUIC Transport | 0-RTT reconnect, multiplexing, built-in congestion control (feature-gated) |
+| 🔀 Transport Abstraction | Single API works with UDP, TCP, WebSocket, and QUIC |
 | 🚫 Custom Error Types | Typed `VCLError` enum with full `std::error::Error` impl |
 | 📡 Connection Events | Subscribe to lifecycle & data events via async mpsc channel |
 | 🏓 Ping / Heartbeat | Built-in ping/pong with automatic round-trip latency measurement |
@@ -60,13 +61,14 @@ VCL Protocol is a transport protocol where each packet cryptographically links t
 | 📉 Congestion Control | AIMD algorithm with slow start and retransmission |
 | 🔁 Retransmission | Automatic retransmit on timeout with exponential backoff |
 | 📊 Metrics API | `VCLMetrics` aggregates stats across connections and pools |
-| 📈 Prometheus Exporter | **v1.1.0**: Native `/metrics` endpoint with process + VCL stats |
-| 🔐 Post-Quantum Ready | **v1.1.0**: Experimental `pq_crypto` module (Hybrid X25519+Kyber) |
-| 🕳️ Tunnel Abstraction | **v1.1.0**: High-level VPN API with Mobile/Home/Corporate presets |
+| 📈 Prometheus Exporter | Native `/metrics` endpoint with process + VCL stats |
+| 🔐 Post-Quantum Ready | Experimental `pq_crypto` module (Hybrid X25519+Kyber768, feature-gated) |
+| 🕳️ Tunnel Abstraction | High-level VPN API with Mobile/Home/Corporate presets |
+| 🪟 Cross-Platform TUN | Linux (`tun`) + Windows (`wintun`) virtual interface support |
 | ⚙️ Config Presets | VPN, Gaming, Streaming, Auto — one line setup |
 | 📝 Tracing Logs | Structured logging via `tracing` crate |
 | 📈 Benchmarks | Performance benchmarks via `criterion` |
-| 🖥️ TUN Interface | Capture IP packets from OS network stack (Linux) |
+| 🖥️ TUN Interface | Capture IP packets from OS network stack (Linux/Windows) |
 | 📦 IP Packet Parser | Full IPv4/IPv6/TCP/UDP/ICMP header parsing |
 | 🔀 Multipath | Send across multiple interfaces (WiFi + LTE) simultaneously |
 | 📐 MTU Negotiation | Automatic path MTU discovery via binary search |
@@ -75,7 +77,7 @@ VCL Protocol is a transport protocol where each packet cryptographically links t
 | 🛡️ DNS Leak Protection | Intercept DNS, blocklist, split DNS, response caching |
 | 🎭 Traffic Obfuscation | TLS/HTTP2 mimicry to bypass DPI censorship (МТС, Beeline) |
 | 📖 Full API Docs | Complete documentation on [docs.rs](https://docs.rs/vcl-protocol) |
-| 🧪 Full Test Suite | 334/334 tests passing (unit + integration + doc) |
+| 🧪 Full Test Suite | 343/343 tests passing (unit + integration + doc) |
 
 ---
 
@@ -215,12 +217,25 @@ All send/recv via binary frames — same API as TCP/UDP
 Works through HTTP proxies and firewalls
 ```
 
-### TUN Interface (v1.1.0)
+### QUIC Transport (v1.5.0)
+
+```text
+VCLTransport::bind_quic("addr")   → QUIC endpoint (server)
+VCLTransport::connect_quic("addr")→ QUIC client connection
+
+Features:
+- 0-RTT handshake for instant reconnect
+- Built-in congestion control & flow control
+- Multiplexed streams over single connection
+- UDP-based, NAT-friendly
+```
+
+### TUN Interface (v1.5.0, Cross-Platform)
 
 ```text
 OS Network Stack
    ↓ (routing table)
-TUN interface (vcl0) ← VCLTun::create(TunConfig)
+TUN interface (vcl0) ← VCLTun::create(TunConfig)  [Linux: tun, Windows: wintun]
    ↓ VCLTun::read_packet()
 IP Packet → parse_ip_packet() → ParsedPacket { src, dst, protocol, ... }
    ↓ encrypt + send via VCLConnection
@@ -228,7 +243,7 @@ IP Packet → parse_ip_packet() → ParsedPacket { src, dst, protocol, ... }
 VCLTun::write_packet() → inject back into OS stack
 ```
 
-### Multipath (v1.1.0)
+### Multipath (v1.5.0)
 
 ```text
 MultipathSender (scheduling policies):
@@ -243,7 +258,7 @@ MultipathReceiver:
   Duplicate detection → silently drops redundant copies
 ```
 
-### Traffic Obfuscation (v1.1.0)
+### Traffic Obfuscation (v1.5.0)
 
 ```text
 ObfuscationMode::TlsMimicry   → looks like TLS 1.3 HTTPS
@@ -341,7 +356,7 @@ async fn main() {
 }
 ```
 
-### Obfuscation Example (v1.1.0)
+### Obfuscation Example (v1.5.0)
 
 ```rust
 use vcl_protocol::obfuscation::{Obfuscator, ObfuscationConfig, recommended_mode, ObfuscationMode};
@@ -358,7 +373,7 @@ assert_eq!(restored, data);
 println!("Overhead: {:.1}%", obf.overhead_ratio() * 100.0);
 ```
 
-### Keepalive Example (v1.1.0)
+### Keepalive Example (v1.5.0)
 
 ```rust
 use vcl_protocol::keepalive::{KeepaliveManager, KeepalivePreset, KeepaliveAction};
@@ -380,7 +395,7 @@ loop {
 }
 ```
 
-### DNS Protection Example (v1.1.0)
+### DNS Protection Example (v1.5.0)
 
 ```rust
 use vcl_protocol::dns::{DnsFilter, DnsConfig, DnsAction, DnsQueryType};
@@ -460,6 +475,9 @@ Traffic obfuscation (TLS/HTTP2 mimicry) bypasses DPI used by ISPs like МТС an
 ### 🖥️ Browser Clients
 WebSocket transport allows VCL Protocol to work from browsers and through corporate HTTP proxies.
 
+### 🪟 Windows VPN Clients
+Cross-platform TUN support (Linux + Windows) enables native VPN deployment on Windows via Wintun.
+
 ---
 
 ## 🔬 Technical Details
@@ -472,7 +490,7 @@ WebSocket transport allows VCL Protocol to work from browsers and through corpor
 - **Key Generation:** CSPRNG
 - **Replay Protection:** Sequence validation + nonce tracking (1000-entry window)
 
-### Post-Quantum Cryptography (v1.1.0, Experimental)
+### Post-Quantum Cryptography (v1.5.0, Experimental)
 - **Module:** `pq_crypto`
 - **Algorithm:** Hybrid Mode (X25519 + Kyber768)
 - **Status:** Experimental, requires `--features pq`
@@ -482,55 +500,57 @@ WebSocket transport allows VCL Protocol to work from browsers and through corpor
 - **UDP** — low latency, default
 - **TCP** — reliable, ordered (VPN mode)
 - **WebSocket** — browser-compatible, HTTP proxy-friendly
+- **QUIC** — 0-RTT reconnect, multiplexing, built-in congestion control (`--features quic`)
 - **Runtime:** Tokio async
 - **Max Packet Size:** 65535 bytes
 - **TCP/WS Framing:** 4-byte big-endian length prefix (TCP), binary frames (WS)
 
-### TUN Interface (v1.1.0)
-- **Platform:** Linux only (requires `CAP_NET_ADMIN` or root)
+### TUN Interface (v1.5.0, Cross-Platform)
+- **Linux:** `tun` crate, requires `CAP_NET_ADMIN` or root
+- **Windows:** `wintun` crate, requires administrator privileges
 - **Default MTU:** 1420 bytes
 - **IP versions:** IPv4 and IPv6
-- **Crate:** `tun` with async feature
+- **Unified API:** `VCLTun::create()` works on both platforms
 
-### IP Parsing (v1.1.0)
+### IP Parsing (v1.5.0)
 - **IPv4/IPv6** header parsing via `etherparse`
 - **Protocols:** TCP, UDP, ICMP, ICMPv6, and any other protocol number
 - **Helpers:** `is_dns()`, `is_ping()`, `summary()`
 
-### Multipath (v1.1.0)
+### Multipath (v1.5.0)
 - **Scheduling:** BestPath, RoundRobin, WeightedRoundRobin, Redundant, LowestLatency
 - **Reorder buffer:** up to 256 out-of-order packets
 - **Duplicate detection:** sequence-based
 
-### MTU Negotiation (v1.1.0)
+### MTU Negotiation (v1.5.0)
 - **Algorithm:** Binary search probing
 - **Range:** 576–1500 bytes (configurable up to 9000 for jumbo frames)
 - **VCL overhead:** 149 bytes (Ed25519 + hash + nonce + headers)
 
-### Keepalive (v1.1.0)
+### Keepalive (v1.5.0)
 - **Mobile preset:** 20s interval (МТС/Beeline 30s NAT timeout)
 - **Adaptive:** adjusts interval based on measured RTT
 - **Dead detection:** configurable missed pong count
 
-### DNS Protection (v1.1.0)
+### DNS Protection (v1.5.0)
 - **Upstream:** Cloudflare (1.1.1.1), Google (8.8.8.8), Quad9 (9.9.9.9)
 - **Cache:** TTL-based, up to 1024 entries
 - **Blocklist:** wildcard subdomain matching
 - **Split DNS:** per-domain bypass rules
 
-### Traffic Obfuscation (v1.1.0)
+### Traffic Obfuscation (v1.5.0)
 - **TLS Mimicry:** Content-Type 0x17, Version 0x0303 (TLS 1.3 compat)
 - **HTTP/2 Mimicry:** DATA frame (type 0x00) with stream ID rotation
 - **Size Normalization:** pads to common HTTPS sizes (64–1460 bytes)
 - **XOR Scrambling:** lightweight payload scrambling
 - **Timing Jitter:** pseudo-random delay to disguise traffic patterns
 
-### Prometheus Metrics (v1.1.0)
+### Prometheus Metrics (v1.5.0)
 - **Module:** `prometheus_metrics`
 - **Metrics:** Packets sent/recv, bytes, loss rate, RTT, connection state
 - **Integration:** Exports data compatible with Prometheus text format
 
-### Tunnel Abstraction (v1.1.0)
+### Tunnel Abstraction (v1.5.0)
 - **API:** `VCLTunnel` with `TunnelConfig` presets
 - **Presets:** `Mobile` (aggressive keepalive, full obfuscation), `Home`, `Corporate`
 - **Integration:** Wraps TUN, VCL, DNS, and Obfuscation in one object
@@ -561,18 +581,21 @@ WebSocket transport allows VCL Protocol to work from browsers and through corpor
 - `tokio` — Async runtime
 - `tokio-tungstenite` — WebSocket transport
 - `futures-util` — async stream utilities
-- `tun` — TUN virtual network interface
+- `tun` — TUN virtual network interface (Linux)
+- `wintun` — Wintun adapter (Windows, optional)
 - `etherparse` — IP/TCP/UDP packet parsing
 - `serde` + `bincode` — Serialization
 - `tracing` — Structured logging
 - `tracing-subscriber` — Log output
+- `quinn` — QUIC implementation (optional)
+- `rustls` + `rcgen` — TLS for QUIC (optional)
 
 ---
 
 ## 🛠️ Development
 
 ```bash
-cargo test                         # Run all tests (334/334)
+cargo test                         # Run all tests (343/343)
 cargo test --lib                   # Unit tests only
 cargo test --test integration_test # Integration tests only
 cargo bench                        # Run benchmarks
@@ -582,6 +605,12 @@ cargo fmt                          # Format code
 cargo clippy                       # Linting
 cargo build --release              # Release build
 cargo doc --open                   # Generate and open docs locally
+
+# Build with optional features:
+cargo build --features quic        # Enable QUIC transport
+cargo build --features pq          # Enable Post-Quantum crypto
+cargo build --features wintun      # Enable Windows TUN support
+cargo build --all-features         # Enable all optional features
 ```
 
 ---
@@ -607,12 +636,73 @@ GitHub: [@ultrakill148852-collab](https://github.com/ultrakill148852-collab)
 - **XChaCha20-Poly1305** — Modern authenticated encryption
 - **Tokio** — Asynchronous runtime for Rust
 - **Rust** — The language that makes the impossible possible
+- **Wintun** — Official WireGuard Windows TUN driver
+- **Quinn** — Pure-Rust QUIC implementation
+
+---
+
+## 🔄 Changelog
+
+### v1.5.0 (Current) 🎉
+- **QUIC Transport** — 0-RTT reconnect, multiplexing, built-in congestion control (`--features quic`)
+- **Cross-Platform TUN** — Windows support via `wintun` crate (Linux + Windows unified API)
+- **Prometheus Metrics** — Native `/metrics` endpoint with process + VCL stats
+- **Post-Quantum Crypto** — Experimental hybrid X25519+Kyber768 handshake (`--features pq`)
+- **Tunnel Abstraction** — High-level `VCLTunnel` API with Mobile/Home/Corporate presets
+- **343/343 tests passing** (unit + integration + doc)
+
+### v1.1.0 ✅
+- Prometheus metrics export via `prometheus_metrics`
+- Post-Quantum cryptography placeholders (`pq_crypto`)
+- High-level Tunnel abstraction with presets
+- 334/334 tests passing
+
+### v1.0.0 ✅
+- TUN Interface — `VCLTun` for IP packet capture (Linux)
+- IP Parser — full IPv4/IPv6/TCP/UDP/ICMP parsing via `etherparse`
+- Multipath — `MultipathSender` + `MultipathReceiver` with 5 scheduling policies
+- MTU Negotiation — binary search path MTU discovery
+- Keepalive — NAT keepalive with Mobile/Home/Corporate presets
+- Reconnect — exponential backoff with jitter and stability detection
+- DNS Protection — `DnsFilter` with blocklist, split DNS, response cache
+- Traffic Obfuscation — TLS mimicry, HTTP/2 mimicry, size normalization
+- 257/257 tests passing
+
+### v0.5.0 ✅
+- WebSocket Transport
+- Congestion Control (AIMD)
+- Retransmission with exponential RTO backoff
+- RFC 6298 RTT estimation
+- Metrics API (`VCLMetrics`)
+- 113/113 tests passing
+
+### v0.4.0 ✅
+- TCP/UDP Transport Abstraction
+- Packet Fragmentation
+- Flow Control (sliding window)
+- Config Presets
+- 89/89 tests passing
+
+### v0.3.0 ✅
+- Connection Pool, Tracing, Benchmarks, docs.rs
+- 33/33 tests passing
+
+### v0.2.0 ✅
+- Connection Events, Ping/Heartbeat, Key Rotation, Custom Errors
+- 29/29 tests passing
+
+### v0.1.0 ✅
+- Cryptographic chain, Ed25519, X25519, XChaCha20-Poly1305
+- Replay protection, Session management
+- 17/17 tests passing
 
 ---
 
 <div align="center">
 
 **Made with ❤️ using Rust**
+
+*Secure • Chained • Verified • Cross-Platform • Production Ready*
 
 [⬆️ Back to top](#vcl-protocol)
 
