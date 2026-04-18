@@ -38,19 +38,18 @@ use tokio_tungstenite::{
 };
 use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
-use tracing::{debug, info};
+use std::sync::Arc;
+use tracing::{debug, info, warn};
 
 // QUIC Dependencies
 #[cfg(feature = "quic")]
-use quinn::{Endpoint, Connection, RecvStream, SendStream, ServerConfig, ClientConfig};
+use quinn::{Endpoint, Connection, RecvStream, SendStream, ServerConfig, ClientConfig, VarInt};
 #[cfg(feature = "quic")]
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 #[cfg(feature = "quic")]
 use rustls::client::danger::{ServerCertVerifier, ServerCertVerified, HandshakeSignatureValid};
 #[cfg(feature = "quic")]
-use rcgen::{generate_simple_self_signed, CertifiedKey};
-#[cfg(feature = "quic")]
-use std::sync::Arc;
+use rcgen::generate_simple_self_signed;
 
 const UDP_MAX_SIZE: usize = 65535;
 const TCP_HEADER_SIZE: usize = 4;
@@ -189,18 +188,17 @@ impl VCLTransport {
         let key_der = PrivateKeyDer::try_from(cert.key_pair.serialize_der())
             .map_err(|e| VCLError::CryptoError(e.to_string()))?;
 
-        let mut server_config = ServerConfig::with_crypto(
-            Arc::new(
-                rustls::ServerConfig::builder()
-                    .with_no_client_auth()
-                    .with_single_cert(vec![cert_der], key_der)
-                    .map_err(|e| VCLError::CryptoError(e.to_string()))?
-            )
-        );
-        
-        // Disable 0-RTT for safety until session tickets are implemented
+        let rustls_server_config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der], key_der)
+            .map_err(|e| VCLError::CryptoError(e.to_string()))?;
+
+        let quic_server_config = quinn::crypto::rustls::QuicServerConfig::try_from(rustls_server_config)
+            .map_err(|e| VCLError::CryptoError(e.to_string()))?;
+
+        let mut server_config = ServerConfig::with_crypto(Arc::new(quic_server_config));
         let mut transport_config = quinn::TransportConfig::default();
-        transport_config.max_concurrent_uni_streams(0u8.into()); // Only allow bidirectional streams for simplicity
+        transport_config.max_concurrent_uni_streams(0u8.into());
         server_config.transport_config(Arc::new(transport_config));
 
         let endpoint = Endpoint::server(server_config, bind_addr)
@@ -219,12 +217,15 @@ impl VCLTransport {
         let addr: SocketAddr = server_addr.parse()?;
         let local_addr = SocketAddr::from(([0, 0, 0, 0], 0));
 
-        let client_crypto = rustls::ClientConfig::builder()
+        let mut rustls_client_config = rustls::ClientConfig::builder()
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(SkipServerVerification))
             .with_no_client_auth();
 
-        let mut client_config = ClientConfig::new(Arc::new(client_crypto));
+        let quic_client_config = quinn::crypto::rustls::QuicClientConfig::try_from(rustls_client_config)
+            .map_err(|e| VCLError::CryptoError(e.to_string()))?;
+
+        let mut client_config = ClientConfig::new(Arc::new(quic_client_config));
         let mut transport_config = quinn::TransportConfig::default();
         transport_config.max_concurrent_uni_streams(0u8.into());
         client_config.transport_config(Arc::new(transport_config));
@@ -452,19 +453,17 @@ impl VCLTransport {
             }
             #[cfg(feature = "quic")]
             VCLTransport::Quic { recv, .. } => {
-                // Read a chunk. In a real app, you might want framing here too.
-                // For now, we read up to 64KB or until stream closes.
                 let mut buf = vec![0u8; UDP_MAX_SIZE];
-                let n = recv.read(&mut buf).await
+                let n: Option<usize> = recv.read(&mut buf).await
                     .map_err(|e| VCLError::IoError(format!("QUIC recv failed: {}", e)))?;
                 
-                if n == 0 {
-                    return Err(VCLError::IoError("QUIC stream closed by peer".to_string()));
+                match n {
+                    Some(0) => return Err(VCLError::IoError("QUIC stream closed by peer".to_string())),
+                    Some(n) => buf.truncate(n),
+                    None => return Err(VCLError::IoError("QUIC stream closed unexpectedly".to_string())),
                 }
                 
-                buf.truncate(n);
-                debug!(size = n, "QUIC recv");
-                // QUIC doesn't have a simple SocketAddr like UDP/TCP, using placeholder
+                debug!(size = buf.len(), "QUIC recv");
                 let placeholder: SocketAddr = "0.0.0.0:0".parse().unwrap();
                 Ok((buf, placeholder))
             }
@@ -535,7 +534,7 @@ impl VCLTransport {
             | VCLTransport::WebSocketListener { .. } => TransportMode::Tcp,
             #[cfg(feature = "quic")]
             VCLTransport::Quic { .. } 
-            | VCLTransport::QuicListener { .. } => TransportMode::Udp, // QUIC runs over UDP
+            | VCLTransport::QuicListener { .. } => TransportMode::Udp,
         }
     }
 
@@ -570,6 +569,7 @@ impl VCLTransport {
 }
 
 #[cfg(feature = "quic")]
+#[derive(Debug)]
 struct SkipServerVerification;
 
 #[cfg(feature = "quic")]
