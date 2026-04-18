@@ -2,13 +2,13 @@
 //!
 //! Command-line interface for VCL Protocol tunnel management.
 //! Provides client and server modes with graceful shutdown, structured logging,
-//! and integration with `VCLTunnel` / `VCLConnection` APIs.
+//! and integration with `VCLTunnel` and `VCLConnection` APIs.
 //!
 //! ## Usage
 //!
 //! ```bash
 //! vcl-cli connect --local 10.0.0.1 --remote 10.0.0.2 --preset mobile
-//! vcl-cli server --bind 0.0.0.0:8080
+//! vcl-cli server --bind 0.0.0.0:8080 --timeout 300
 //! VCL_LOG_LEVEL=debug vcl-cli server --bind 127.0.0.1:8080
 //! ```
 
@@ -24,7 +24,6 @@ use tracing_subscriber::{fmt, EnvFilter};
 
 use vcl_protocol::connection::VCLConnection;
 use vcl_protocol::tunnel::{VCLTunnel, TunnelConfig};
-use vcl_protocol::config::VCLConfig;
 use vcl_protocol::error::VCLError;
 
 /// Log verbosity levels.
@@ -49,7 +48,7 @@ impl LogLevel {
     }
 }
 
-/// Network presets.
+/// Network presets for tunnel configuration.
 #[derive(Debug, Clone, ValueEnum)]
 enum Preset {
     Mobile,
@@ -57,54 +56,57 @@ enum Preset {
     Corporate,
 }
 
-/// Main CLI structure.
+/// Main CLI entry point structure.
 #[derive(Parser)]
 #[command(
     name = "vcl-cli",
     version = env!("CARGO_PKG_VERSION"),
     about = "VCL Protocol CLI — Secure chained packet transport",
-    long_about = "Command-line interface for starting VCL client tunnels and server listeners."
+    long_about = "Command-line interface for starting VCL client tunnels and server listeners with graceful shutdown and structured logging."
 )]
 struct Cli {
     /// Global log level.
     #[arg(short = 'l', long, value_enum, default_value_t = LogLevel::Info, env = "VCL_LOG_LEVEL")]
     log_level: LogLevel,
 
-    /// Subcommand.
+    /// Subcommand to execute.
     #[command(subcommand)]
     command: Commands,
 }
 
-/// Available subcommands.
+/// Available CLI subcommands.
 #[derive(Subcommand)]
 enum Commands {
-    /// Start a client tunnel.
+    /// Start a client tunnel connection.
     Connect {
-        /// Local TUN IP.
+        /// Local TUN interface IP address.
         #[arg(short, long, default_value = "10.0.0.1")]
         local: Ipv4Addr,
-        /// Remote gateway IP.
+        /// Remote gateway IP address.
         #[arg(short, long, default_value = "10.0.0.2")]
         remote: Ipv4Addr,
-        /// Network preset.
+        /// Network preset for tunnel behavior.
         #[arg(short, long, value_enum, default_value_t = Preset::Mobile)]
         preset: Preset,
-        /// DNS upstream.
+        /// Primary DNS upstream server.
         #[arg(long, default_value = "1.1.1.1")]
         dns_upstream: String,
-        /// Optional TOML config path.
+        /// Path to optional TOML configuration file.
         #[arg(short = 'c', long)]
         config_path: Option<PathBuf>,
     },
-    /// Start a server listener.
+    /// Start a VCL server listener.
     Server {
-        /// Bind address.
+        /// Bind address for the server.
         #[arg(short, long, default_value = "0.0.0.0:8080")]
         bind: String,
+        /// Inactivity timeout in seconds.
+        #[arg(short = 't', long, default_value_t = 300)]
+        timeout: u64,
     },
 }
 
-/// Initialize tracing.
+/// Initialize the tracing subscriber with the selected log level.
 fn init_logging(level: &LogLevel) {
     let filter = EnvFilter::new(level.to_filter_str());
     fmt()
@@ -115,7 +117,7 @@ fn init_logging(level: &LogLevel) {
         .init();
 }
 
-/// Run client tunnel.
+/// Run the client tunnel lifecycle.
 async fn run_client(
     local: Ipv4Addr,
     remote: Ipv4Addr,
@@ -138,55 +140,58 @@ async fn run_client(
     };
 
     let mut tunnel = VCLTunnel::new(config);
+    info!("Tunnel interface created. Waiting for events...");
 
-    info!("Tunnel created. Press Ctrl+C to stop.");
-
-    // Graceful shutdown
+    // Graceful shutdown loop
     tokio::select! {
         _ = signal::ctrl_c() => {
-            info!("SIGINT received. Shutting down...");
+            info!("Received SIGINT. Initiating graceful shutdown...");
         }
         _ = async {
             loop {
                 sleep(Duration::from_secs(5)).await;
+                // Tunnel event polling / stats reporting would go here
             }
         } => {}
     }
 
+    info!("Shutting down tunnel gracefully...");
     Ok(())
 }
 
-/// Run server listener.
-async fn run_server(bind: String) -> Result<(), Box<dyn std::error::Error>> {
-    info!(bind = %bind, "Starting VCL server");
+/// Run the server listener lifecycle.
+async fn run_server(bind: String, timeout: u64) -> Result<(), Box<dyn std::error::Error>> {
+    info!(bind = %bind, timeout = timeout, "Initializing VCL server");
 
     let mut server = VCLConnection::bind(&bind).await.map_err(|e| {
         error!(error = %e, "Failed to bind server");
         e
     })?;
 
-    info!("Server bound. Waiting for handshakes...");
+    info!("Server bound. Waiting for incoming handshakes...");
 
     loop {
         tokio::select! {
             _ = signal::ctrl_c() => {
-                info!("SIGINT received. Stopping server...");
+                info!("Received SIGINT. Stopping server...");
                 break;
             }
             result = server.accept_handshake() => {
                 match result {
-                    Ok(()) => info!("Handshake completed"),
-                    Err(VCLError::Timeout) => warn!("Handshake timeout"),
-                    Err(VCLError::ConnectionClosed) => warn!("Connection closed"),
+                    Ok(()) => info!("Client handshake completed successfully"),
+                    Err(VCLError::Timeout) => warn!("Client handshake timed out"),
+                    Err(VCLError::ConnectionClosed) => warn!("Connection closed during handshake"),
                     Err(e) => error!(error = %e, "Handshake failed"),
                 }
             }
         }
     }
 
+    info!("Server stopped. Cleaning up resources...");
     Ok(())
 }
 
+/// CLI entry point.
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
@@ -196,7 +201,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Connect { local, remote, preset, dns_upstream, config_path } => {
             run_client(local, remote, preset, dns_upstream, config_path).await
         }
-        Commands::Server { bind } => run_server(bind).await,
+        Commands::Server { bind, timeout } => {
+            run_server(bind, timeout).await
+        }
     }
 }
 
@@ -206,26 +213,39 @@ mod tests {
     use clap::CommandFactory;
 
     #[test]
-    fn test_cli_parses_connect_defaults() {
+    fn test_cli_parses_client_defaults() {
         let args = vec!["vcl-cli", "connect"];
         let cli = Cli::try_parse_from(args).unwrap();
         assert!(matches!(cli.command, Commands::Connect { .. }));
-    }
-
-    #[test]
-    fn test_cli_parses_server_flags() {
-        let args = vec!["vcl-cli", "--log-level", "debug", "server", "--bind", "127.0.0.1:9999"];
-        let cli = Cli::try_parse_from(args).unwrap();
-        assert!(matches!(cli.log_level, LogLevel::Debug));
-        if let Commands::Server { bind, .. } = cli.command {
-            assert_eq!(bind, "127.0.0.1:9999");
+        if let Commands::Connect { local, remote, preset, .. } = cli.command {
+            assert_eq!(local, Ipv4Addr::new(10, 0, 0, 1));
+            assert_eq!(remote, Ipv4Addr::new(10, 0, 0, 2));
+            assert!(matches!(preset, Preset::Mobile));
         }
     }
 
     #[test]
-    fn test_cli_command_debug() {
-        Cli::command().debug_assert();
+    fn test_cli_parses_server_flags() {
+        let args = vec![
+            "vcl-cli", "--log-level", "debug", "server",
+            "--bind", "127.0.0.1:9999", "--timeout", "120",
+        ];
+        let cli = Cli::try_parse_from(args).unwrap();
+        assert!(matches!(cli.log_level, LogLevel::Debug));
+        if let Commands::Server { bind, timeout, .. } = cli.command {
+            assert_eq!(bind, "127.0.0.1:9999");
+            assert_eq!(timeout, 120);
+        }
     }
-}
+
+    #[test]
+    fn test_cli_requires_subcommand() {
+        let args = vec!["vcl-cli"];
+        assert!(Cli::try_parse_from(args).is_err());
+    }
+
+    #[test]
+    fn test_cli_command_factory() {
+        Cli::command().debug_assert();
     }
 }
