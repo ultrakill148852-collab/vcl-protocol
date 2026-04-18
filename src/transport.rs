@@ -234,11 +234,12 @@ impl VCLTransport {
         let endpoint = Endpoint::client(local_addr)
             .map_err(|e| VCLError::IoError(e.to_string()))?;
 
-        let connecting = endpoint.connect(addr, "vcl.local")
-            .map_err(|e| VCLError::IoError(e.to_string()))?;
+        // FIX: Use connect_with to explicitly pass the custom client config
+        let connecting = endpoint.connect_with(client_config, addr, "vcl.local")
+            .map_err(|e| VCLError::IoError(format!("QUIC connect failed: {}", e)))?;
         
         let conn = connecting.await
-            .map_err(|e| VCLError::IoError(format!("QUIC connect failed: {}", e)))?;
+            .map_err(|e| VCLError::IoError(format!("QUIC connection failed: {}", e)))?;
 
         let (send, recv) = conn.open_bi().await
             .map_err(|e| VCLError::IoError(format!("QUIC stream open failed: {}", e)))?;
@@ -324,7 +325,7 @@ impl VCLTransport {
     /// - TCP: 4-byte length prefix + data
     /// - WebSocket: binary message
     /// - QUIC: writes to bidirectional stream
-    pub async fn send_raw(&mut self, data: &[u8]) -> Result<(), VCLError> {
+    pub async fn send_raw(&mut self,  &[u8]) -> Result<(), VCLError> {
         match self {
             VCLTransport::Udp { socket, peer_addr } => {
                 let addr = peer_addr.ok_or(VCLError::NoPeerAddress)?;
