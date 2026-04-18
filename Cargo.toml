@@ -16,7 +16,7 @@ default = ["ws"]
 ws = ["dep:tokio-tungstenite"]
 quic = ["dep:quinn", "dep:rustls", "dep:rcgen"]
 pq = ["dep:pqcrypto-kyber", "dep:pqcrypto-traits"]
-wintun = ["dep:wintun"]
+# wintun feature removed — target-specific deps are auto-included on Windows
 
 [dependencies]
 # Cryptography
@@ -54,12 +54,12 @@ clap = { version = "4.5", features = ["derive", "env"] }
 tun = { version = "0.7", features = ["async"] }
 etherparse = "0.15"
 
-# Windows TUN Support (Optional)
-[target.'cfg(windows)'.dependencies]
-wintun = "0.3"
-
 # Metrics
 prometheus = { version = "0.13", features = ["process"] }
+
+# Windows TUN Support (auto-included on Windows)
+[target.'cfg(windows)'.dependencies]
+wintun = "0.3"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }
