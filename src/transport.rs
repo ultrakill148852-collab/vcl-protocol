@@ -39,11 +39,11 @@ use tokio_tungstenite::{
 use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 // QUIC Dependencies
 #[cfg(feature = "quic")]
-use quinn::{Endpoint, Connection, RecvStream, SendStream, ServerConfig, ClientConfig, VarInt};
+use quinn::{Endpoint, Connection, RecvStream, SendStream, ServerConfig, ClientConfig};
 #[cfg(feature = "quic")]
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 #[cfg(feature = "quic")]
@@ -217,7 +217,7 @@ impl VCLTransport {
         let addr: SocketAddr = server_addr.parse()?;
         let local_addr = SocketAddr::from(([0, 0, 0, 0], 0));
 
-        let mut rustls_client_config = rustls::ClientConfig::builder()
+        let rustls_client_config = rustls::ClientConfig::builder()
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(SkipServerVerification))
             .with_no_client_auth();
@@ -764,10 +764,11 @@ mod tests {
         let listener = VCLTransport::bind_quic("127.0.0.1:0").await.unwrap();
         assert!(listener.is_quic());
         let local_addr = listener.local_addr().unwrap();
+        let addr_str = local_addr.to_string();
 
         let (server_result, client_result) = tokio::join!(
             listener.accept(),
-            VCLTransport::connect_quic(&format!("{}", local_addr)),
+            VCLTransport::connect_quic(&addr_str),
         );
 
         let mut server = server_result.unwrap();
@@ -783,10 +784,11 @@ mod tests {
     async fn test_quic_multiple_messages() {
         let listener = VCLTransport::bind_quic("127.0.0.1:0").await.unwrap();
         let local_addr = listener.local_addr().unwrap();
+        let addr_str = local_addr.to_string();
 
         let (server_result, client_result) = tokio::join!(
             listener.accept(),
-            VCLTransport::connect_quic(&format!("{}", local_addr)),
+            VCLTransport::connect_quic(&addr_str),
         );
 
         let mut server = server_result.unwrap();
@@ -805,10 +807,11 @@ mod tests {
     async fn test_quic_large_payload() {
         let listener = VCLTransport::bind_quic("127.0.0.1:0").await.unwrap();
         let local_addr = listener.local_addr().unwrap();
+        let addr_str = local_addr.to_string();
 
         let (server_result, client_result) = tokio::join!(
             listener.accept(),
-            VCLTransport::connect_quic(&format!("{}", local_addr)),
+            VCLTransport::connect_quic(&addr_str),
         );
 
         let mut server = server_result.unwrap();
@@ -823,14 +826,14 @@ mod tests {
     #[cfg(feature = "quic")]
     #[tokio::test]
     async fn test_quic_send_on_listener_fails() {
-        let listener = VCLTransport::bind_quic("127.0.0.1:0").await.unwrap();
+        let mut listener = VCLTransport::bind_quic("127.0.0.1:0").await.unwrap();
         assert!(listener.send_raw(b"test").await.is_err());
     }
 
     #[cfg(feature = "quic")]
     #[tokio::test]
     async fn test_quic_recv_on_listener_fails() {
-        let listener = VCLTransport::bind_quic("127.0.0.1:0").await.unwrap();
+        let mut listener = VCLTransport::bind_quic("127.0.0.1:0").await.unwrap();
         assert!(listener.recv_raw().await.is_err());
     }
 
@@ -842,9 +845,11 @@ mod tests {
         assert!(listener.peer_addr().is_none());
 
         let local_addr = listener.local_addr().unwrap();
+        let addr_str = local_addr.to_string();
+
         let (server_result, client_result) = tokio::join!(
             listener.accept(),
-            VCLTransport::connect_quic(&format!("{}", local_addr)),
+            VCLTransport::connect_quic(&addr_str),
         );
 
         let server = server_result.unwrap();
@@ -863,9 +868,11 @@ mod tests {
         assert_eq!(listener.mode(), TransportMode::Udp);
 
         let local_addr = listener.local_addr().unwrap();
+        let addr_str = local_addr.to_string();
+
         let (server_result, _) = tokio::join!(
             listener.accept(),
-            VCLTransport::connect_quic(&format!("{}", local_addr)),
+            VCLTransport::connect_quic(&addr_str),
         );
         let server = server_result.unwrap();
         assert_eq!(server.mode(), TransportMode::Udp);
