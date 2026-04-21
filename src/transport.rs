@@ -488,7 +488,7 @@ impl VCLTransport {
         }
     }
 
-    // ─── Info ────────────────────────────────────────────────────────────────
+    // ─── Info ───────────────────────────────────────────────────────────────
 
     /// Returns the local address this transport is bound to.
     pub fn local_addr(&self) -> Option<SocketAddr> {
