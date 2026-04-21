@@ -204,8 +204,12 @@ impl VCLTransport {
         let endpoint = Endpoint::server(server_config, bind_addr)
             .map_err(|e| VCLError::IoError(e.to_string()))?;
 
-        info!(addr = %bind_addr, "QUIC transport bound (listener)");
-        Ok(VCLTransport::QuicListener { endpoint, local_addr: bind_addr })
+        // FIX: Use actual bound address from endpoint instead of original bind_addr
+        let actual_addr = endpoint.local_addr()
+            .map_err(|e| VCLError::IoError(format!("Failed to get local address: {}", e)))?;
+
+        info!(addr = %actual_addr, "QUIC transport bound (listener)");
+        Ok(VCLTransport::QuicListener { endpoint, local_addr: actual_addr })
     }
 
     /// Connect a QUIC client to a remote address.
@@ -324,7 +328,7 @@ impl VCLTransport {
     /// - TCP: 4-byte length prefix + data
     /// - WebSocket: binary message
     /// - QUIC: writes to bidirectional stream
-    pub async fn send_raw(&mut self, data: &[u8]) -> Result<(), VCLError> {
+    pub async fn send_raw(&mut self,  &[u8]) -> Result<(), VCLError> {
         match self {
             VCLTransport::Udp { socket, peer_addr } => {
                 let addr = peer_addr.ok_or(VCLError::NoPeerAddress)?;
@@ -483,7 +487,7 @@ impl VCLTransport {
         }
     }
 
-    // ─── Info ─────────────────────────────────────────────────────────────────
+    // ─── Info ────────────────────────────────────────────────────────────────
 
     /// Returns the local address this transport is bound to.
     pub fn local_addr(&self) -> Option<SocketAddr> {
