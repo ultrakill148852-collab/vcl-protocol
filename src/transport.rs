@@ -198,6 +198,9 @@ impl VCLTransport {
 
         let mut server_config = ServerConfig::with_crypto(Arc::new(quic_server_config));
         let mut transport_config = quinn::TransportConfig::default();
+        
+        // FIX: Allow bidirectional streams (default is 0, which causes accept_bi to timeout)
+        transport_config.max_concurrent_bidi_streams(100u32.into());
         transport_config.max_concurrent_uni_streams(0u8.into());
         server_config.transport_config(Arc::new(transport_config));
 
@@ -231,6 +234,7 @@ impl VCLTransport {
 
         let mut client_config = ClientConfig::new(Arc::new(quic_client_config));
         let mut transport_config = quinn::TransportConfig::default();
+        transport_config.max_concurrent_bidi_streams(100u32.into());
         transport_config.max_concurrent_uni_streams(0u8.into());
         client_config.transport_config(Arc::new(transport_config));
 
@@ -488,7 +492,7 @@ impl VCLTransport {
         }
     }
 
-    // ─── Info ───────────────────────────────────────────────────────────────
+    // ─── Info ──────────────────────────────────────────────────────────────
 
     /// Returns the local address this transport is bound to.
     pub fn local_addr(&self) -> Option<SocketAddr> {
