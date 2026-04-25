@@ -492,7 +492,7 @@ impl VCLTransport {
         }
     }
 
-    // ─── Info ──────────────────────────────────────────────────────────────
+    // ─── Info ───────────────────────────────────────────────────────────────
 
     /// Returns the local address this transport is bound to.
     pub fn local_addr(&self) -> Option<SocketAddr> {
@@ -776,19 +776,14 @@ mod tests {
         let local_addr = listener.local_addr().unwrap();
         let addr_str = local_addr.to_string();
 
-        let server_handle = tokio::spawn(async move {
-            listener.accept().await.unwrap()
-        });
+        // FIX: Use tokio::join! to synchronize connection and stream acceptance
+        let (server_result, client_result) = tokio::join!(
+            listener.accept(),
+            VCLTransport::connect_quic(&addr_str)
+        );
 
-        // Allow server task to start listening
-        tokio::task::yield_now().await;
-
-        let mut client = VCLTransport::connect_quic(&addr_str).await.unwrap();
-        
-        // Allow server to accept connection and stream
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-        let mut server = server_handle.await.unwrap();
+        let mut server = server_result.unwrap();
+        let mut client = client_result.unwrap();
 
         client.send_raw(b"hello quic").await.unwrap();
         let (data, _) = server.recv_raw().await.unwrap();
@@ -802,16 +797,13 @@ mod tests {
         let local_addr = listener.local_addr().unwrap();
         let addr_str = local_addr.to_string();
 
-        let server_handle = tokio::spawn(async move {
-            listener.accept().await.unwrap()
-        });
+        let (server_result, client_result) = tokio::join!(
+            listener.accept(),
+            VCLTransport::connect_quic(&addr_str)
+        );
 
-        tokio::task::yield_now().await;
-
-        let mut client = VCLTransport::connect_quic(&addr_str).await.unwrap();
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-        let mut server = server_handle.await.unwrap();
+        let mut server = server_result.unwrap();
+        let mut client = client_result.unwrap();
 
         for i in 0..5u8 {
             let msg = vec![i; 150];
@@ -828,16 +820,13 @@ mod tests {
         let local_addr = listener.local_addr().unwrap();
         let addr_str = local_addr.to_string();
 
-        let server_handle = tokio::spawn(async move {
-            listener.accept().await.unwrap()
-        });
+        let (server_result, client_result) = tokio::join!(
+            listener.accept(),
+            VCLTransport::connect_quic(&addr_str)
+        );
 
-        tokio::task::yield_now().await;
-
-        let mut client = VCLTransport::connect_quic(&addr_str).await.unwrap();
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-        let mut server = server_handle.await.unwrap();
+        let mut server = server_result.unwrap();
+        let mut client = client_result.unwrap();
 
         let payload = vec![0xABu8; 8192];
         client.send_raw(&payload).await.unwrap();
@@ -869,16 +858,13 @@ mod tests {
         let local_addr = listener.local_addr().unwrap();
         let addr_str = local_addr.to_string();
 
-        let server_handle = tokio::spawn(async move {
-            listener.accept().await.unwrap()
-        });
+        let (server_result, client_result) = tokio::join!(
+            listener.accept(),
+            VCLTransport::connect_quic(&addr_str)
+        );
 
-        tokio::task::yield_now().await;
-
-        let client = VCLTransport::connect_quic(&addr_str).await.unwrap();
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-        let server = server_handle.await.unwrap();
+        let server = server_result.unwrap();
+        let client = client_result.unwrap();
 
         assert!(server.local_addr().is_some());
         assert!(server.peer_addr().is_none());
@@ -895,21 +881,13 @@ mod tests {
         let local_addr = listener.local_addr().unwrap();
         let addr_str = local_addr.to_string();
 
-        let server_handle = tokio::spawn(async move {
-            listener.accept().await.unwrap()
-        });
+        let (server_result, client_result) = tokio::join!(
+            listener.accept(),
+            VCLTransport::connect_quic(&addr_str)
+        );
 
-        tokio::task::yield_now().await;
-
-        // Keep client alive until server accepts
-        let client = VCLTransport::connect_quic(&addr_str).await.unwrap();
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        
-        let server = server_handle.await.unwrap();
+        let server = server_result.unwrap();
         assert_eq!(server.mode(), TransportMode::Udp);
-        
-        // Now safe to drop
-        drop(client);
     }
 
     #[cfg(feature = "quic")]
