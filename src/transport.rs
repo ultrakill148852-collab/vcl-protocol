@@ -329,7 +329,7 @@ impl VCLTransport {
     /// - TCP: 4-byte length prefix + data
     /// - WebSocket: binary message
     /// - QUIC: writes to bidirectional stream
-       pub async fn send_raw(&mut self, data: &[u8]) -> Result<(), VCLError> {
+    pub async fn send_raw(&mut self, data: &[u8]) -> Result<(), VCLError> {
         match self {
             VCLTransport::Udp { socket, peer_addr } => {
                 let addr = peer_addr.ok_or(VCLError::NoPeerAddress)?;
@@ -776,9 +776,14 @@ mod tests {
             listener.accept().await.unwrap()
         });
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        // Allow server task to start listening
+        tokio::task::yield_now().await;
 
         let mut client = VCLTransport::connect_quic(&addr_str).await.unwrap();
+        
+        // Allow server to accept connection and stream
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
         let mut server = server_handle.await.unwrap();
 
         client.send_raw(b"hello quic").await.unwrap();
@@ -797,9 +802,11 @@ mod tests {
             listener.accept().await.unwrap()
         });
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        tokio::task::yield_now().await;
 
         let mut client = VCLTransport::connect_quic(&addr_str).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
         let mut server = server_handle.await.unwrap();
 
         for i in 0..5u8 {
@@ -821,9 +828,11 @@ mod tests {
             listener.accept().await.unwrap()
         });
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        tokio::task::yield_now().await;
 
         let mut client = VCLTransport::connect_quic(&addr_str).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
         let mut server = server_handle.await.unwrap();
 
         let payload = vec![0xABu8; 8192];
@@ -860,9 +869,11 @@ mod tests {
             listener.accept().await.unwrap()
         });
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        tokio::task::yield_now().await;
 
         let client = VCLTransport::connect_quic(&addr_str).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
         let server = server_handle.await.unwrap();
 
         assert!(server.local_addr().is_some());
@@ -884,11 +895,17 @@ mod tests {
             listener.accept().await.unwrap()
         });
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        tokio::task::yield_now().await;
 
-        let _ = VCLTransport::connect_quic(&addr_str).await.unwrap();
+        // Keep client alive until server accepts
+        let client = VCLTransport::connect_quic(&addr_str).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        
         let server = server_handle.await.unwrap();
         assert_eq!(server.mode(), TransportMode::Udp);
+        
+        // Now safe to drop
+        drop(client);
     }
 
     #[cfg(feature = "quic")]
