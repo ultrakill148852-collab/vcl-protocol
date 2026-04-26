@@ -188,10 +188,13 @@ impl VCLTransport {
         let key_der = PrivateKeyDer::try_from(cert.key_pair.serialize_der())
             .map_err(|e| VCLError::CryptoError(e.to_string()))?;
 
-        let rustls_server_config = rustls::ServerConfig::builder()
+        let mut rustls_server_config = rustls::ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(vec![cert_der], key_der)
             .map_err(|e| VCLError::CryptoError(e.to_string()))?;
+            
+        // ALPN is required for QUIC handshake
+        rustls_server_config.alpn_protocols = vec![b"h3".to_vec()];
 
         let quic_server_config = quinn::crypto::rustls::QuicServerConfig::try_from(rustls_server_config)
             .map_err(|e| VCLError::CryptoError(e.to_string()))?;
@@ -199,7 +202,7 @@ impl VCLTransport {
         let mut server_config = ServerConfig::with_crypto(Arc::new(quic_server_config));
         let mut transport_config = quinn::TransportConfig::default();
         
-        // FIX: Allow bidirectional streams (default is 0, which causes accept_bi to timeout)
+        // Allow bidirectional streams
         transport_config.max_concurrent_bidi_streams(100u32.into());
         transport_config.max_concurrent_uni_streams(0u8.into());
         server_config.transport_config(Arc::new(transport_config));
@@ -207,7 +210,7 @@ impl VCLTransport {
         let endpoint = Endpoint::server(server_config, bind_addr)
             .map_err(|e| VCLError::IoError(e.to_string()))?;
 
-        // FIX: Use actual bound address from endpoint instead of original bind_addr
+        // Use actual bound address from endpoint
         let actual_addr = endpoint.local_addr()
             .map_err(|e| VCLError::IoError(format!("Failed to get local address: {}", e)))?;
 
@@ -224,10 +227,13 @@ impl VCLTransport {
         let addr: SocketAddr = server_addr.parse()?;
         let local_addr = SocketAddr::from(([0, 0, 0, 0], 0));
 
-        let rustls_client_config = rustls::ClientConfig::builder()
+        let mut rustls_client_config = rustls::ClientConfig::builder()
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(SkipServerVerification))
             .with_no_client_auth();
+            
+        // ALPN is required for QUIC handshake
+        rustls_client_config.alpn_protocols = vec![b"h3".to_vec()];
 
         let quic_client_config = quinn::crypto::rustls::QuicClientConfig::try_from(rustls_client_config)
             .map_err(|e| VCLError::CryptoError(e.to_string()))?;
@@ -241,7 +247,7 @@ impl VCLTransport {
         let endpoint = Endpoint::client(local_addr)
             .map_err(|e| VCLError::IoError(e.to_string()))?;
 
-        // Explicitly pass client config to avoid "no default client config" error
+        // Explicitly pass client config
         let connecting = endpoint.connect_with(client_config, addr, "vcl.local")
             .map_err(|e| VCLError::IoError(format!("QUIC connect failed: {}", e)))?;
         
@@ -283,8 +289,9 @@ impl VCLTransport {
                 let conn = connecting.await
                     .map_err(|e| VCLError::IoError(format!("QUIC connection failed: {}", e)))?;
                 
-                let (send, recv) = conn.open_bi().await
-                    .map_err(|e| VCLError::IoError(format!("QUIC stream open failed: {}", e)))?;
+                // Use accept_bi to accept the stream opened by the client
+                let (send, recv) = conn.accept_bi().await
+                    .map_err(|e| VCLError::IoError(format!("QUIC stream accept failed: {}", e)))?;
 
                 info!("QUIC connection accepted");
                 Ok(VCLTransport::Quic { endpoint: endpoint.clone(), connection: conn, send, recv })
@@ -332,7 +339,7 @@ impl VCLTransport {
     /// - TCP: 4-byte length prefix + data
     /// - WebSocket: binary message
     /// - QUIC: writes to bidirectional stream
-    pub async fn send_raw(&mut self, data: &[u8]) -> Result<(), VCLError> {
+    pub async fn send_raw(&mut self,  &[u8]) -> Result<(), VCLError> {
         match self {
             VCLTransport::Udp { socket, peer_addr } => {
                 let addr = peer_addr.ok_or(VCLError::NoPeerAddress)?;
@@ -775,7 +782,7 @@ mod tests {
         let local_addr = listener.local_addr().unwrap();
         let addr_str = local_addr.to_string();
 
-        // FIX: Use tokio::join! to synchronize connection and stream acceptance
+        // Use tokio::join! to synchronize connection and stream acceptance
         let (server_result, client_result) = tokio::join!(
             listener.accept(),
             VCLTransport::connect_quic(&addr_str)
