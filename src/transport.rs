@@ -192,7 +192,7 @@ impl VCLTransport {
         
         transport_config.max_concurrent_bidi_streams(100u32.into());
         transport_config.max_concurrent_uni_streams(0u8.into());
-        transport_config.max_idle_timeout(None); // Disable idle timeout for tests/stability
+        transport_config.max_idle_timeout(None);
         server_config.transport_config(Arc::new(transport_config));
 
         let endpoint = Endpoint::server(server_config, bind_addr)
@@ -228,7 +228,7 @@ impl VCLTransport {
         let mut transport_config = quinn::TransportConfig::default();
         transport_config.max_concurrent_bidi_streams(100u32.into());
         transport_config.max_concurrent_uni_streams(0u8.into());
-        transport_config.max_idle_timeout(None); // Disable idle timeout
+        transport_config.max_idle_timeout(None);
         client_config.transport_config(Arc::new(transport_config));
 
         let endpoint = Endpoint::client(local_addr)
@@ -467,7 +467,7 @@ impl VCLTransport {
         }
     }
 
-    // ─── Info ──────────────────────────────────────────────────────────────
+    // ─── Info ───────────────────────────────────────────────────────────────
 
     pub fn local_addr(&self) -> Option<SocketAddr> {
         match self {
@@ -752,8 +752,6 @@ mod tests {
         });
 
         let mut client = VCLTransport::connect_quic(&addr_str).await.unwrap();
-        
-        // Allow handshake and stream setup to settle
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
         let mut server = rx.await.unwrap();
