@@ -283,9 +283,8 @@ impl VCLTransport {
                 let conn = connecting.await
                     .map_err(|e| VCLError::IoError(format!("QUIC connection failed: {}", e)))?;
                 
-                // FIX: Use accept_bi to accept the stream opened by the client
-                let (send, recv) = conn.accept_bi().await
-                    .map_err(|e| VCLError::IoError(format!("QUIC stream accept failed: {}", e)))?;
+                let (send, recv) = conn.open_bi().await
+                    .map_err(|e| VCLError::IoError(format!("QUIC stream open failed: {}", e)))?;
 
                 info!("QUIC connection accepted");
                 Ok(VCLTransport::Quic { endpoint: endpoint.clone(), connection: conn, send, recv })
