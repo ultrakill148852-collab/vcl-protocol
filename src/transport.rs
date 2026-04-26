@@ -167,21 +167,10 @@ impl VCLTransport {
     /// Generates a self-signed certificate for TLS handshake.
     /// Returns a [`QuicListener`](VCLTransport::QuicListener) which must be passed to [`accept()`](VCLTransport::accept).
     /// Requires the `quic` feature to be enabled in `Cargo.toml`.
-    ///
-    /// # Example
-    /// ```no_run
-    /// #[cfg(feature = "quic")]
-    /// # async fn example() {
-    /// use vcl_protocol::transport::VCLTransport;
-    /// let listener = VCLTransport::bind_quic("127.0.0.1:8083").await.unwrap();
-    /// let server_conn = listener.accept().await.unwrap();
-    /// # }
-    /// ```
     #[cfg(feature = "quic")]
     pub async fn bind_quic(addr: &str) -> Result<Self, VCLError> {
         let bind_addr: SocketAddr = addr.parse()?;
         
-        // Generate self-signed certificate
         let cert = generate_simple_self_signed(vec!["vcl.local".into()])
             .map_err(|e| VCLError::CryptoError(e.to_string()))?;
         let cert_der = CertificateDer::from(cert.cert.der().clone());
@@ -193,7 +182,6 @@ impl VCLTransport {
             .with_single_cert(vec![cert_der], key_der)
             .map_err(|e| VCLError::CryptoError(e.to_string()))?;
             
-        // ALPN is required for QUIC handshake
         rustls_server_config.alpn_protocols = vec![b"h3".to_vec()];
 
         let quic_server_config = quinn::crypto::rustls::QuicServerConfig::try_from(rustls_server_config)
@@ -202,7 +190,6 @@ impl VCLTransport {
         let mut server_config = ServerConfig::with_crypto(Arc::new(quic_server_config));
         let mut transport_config = quinn::TransportConfig::default();
         
-        // Allow bidirectional streams
         transport_config.max_concurrent_bidi_streams(100u32.into());
         transport_config.max_concurrent_uni_streams(0u8.into());
         server_config.transport_config(Arc::new(transport_config));
@@ -210,7 +197,6 @@ impl VCLTransport {
         let endpoint = Endpoint::server(server_config, bind_addr)
             .map_err(|e| VCLError::IoError(e.to_string()))?;
 
-        // Use actual bound address from endpoint
         let actual_addr = endpoint.local_addr()
             .map_err(|e| VCLError::IoError(format!("Failed to get local address: {}", e)))?;
 
@@ -232,7 +218,6 @@ impl VCLTransport {
             .with_custom_certificate_verifier(Arc::new(SkipServerVerification))
             .with_no_client_auth();
             
-        // ALPN is required for QUIC handshake
         rustls_client_config.alpn_protocols = vec![b"h3".to_vec()];
 
         let quic_client_config = quinn::crypto::rustls::QuicClientConfig::try_from(rustls_client_config)
@@ -247,7 +232,6 @@ impl VCLTransport {
         let endpoint = Endpoint::client(local_addr)
             .map_err(|e| VCLError::IoError(e.to_string()))?;
 
-        // Explicitly pass client config
         let connecting = endpoint.connect_with(client_config, addr, "vcl.local")
             .map_err(|e| VCLError::IoError(format!("QUIC connect failed: {}", e)))?;
         
@@ -262,10 +246,6 @@ impl VCLTransport {
     }
 
     /// Accept an incoming connection (server side).
-    ///
-    /// Works for [`TcpListener`](VCLTransport::TcpListener),
-    /// [`WebSocketListener`](VCLTransport::WebSocketListener), and
-    /// [`QuicListener`](VCLTransport::QuicListener).
     pub async fn accept(&self) -> Result<Self, VCLError> {
         match self {
             VCLTransport::TcpListener { listener, .. } => {
@@ -289,7 +269,6 @@ impl VCLTransport {
                 let conn = connecting.await
                     .map_err(|e| VCLError::IoError(format!("QUIC connection failed: {}", e)))?;
                 
-                // Use accept_bi to accept the stream opened by the client
                 let (send, recv) = conn.accept_bi().await
                     .map_err(|e| VCLError::IoError(format!("QUIC stream accept failed: {}", e)))?;
 
@@ -334,12 +313,7 @@ impl VCLTransport {
     // ─── Send / Recv ─────────────────────────────────────────────────────────
 
     /// Send raw bytes to the peer.
-    ///
-    /// - UDP: single datagram to `peer_addr`
-    /// - TCP: 4-byte length prefix + data
-    /// - WebSocket: binary message
-    /// - QUIC: writes to bidirectional stream
-    pub async fn send_raw(&mut self, data: &[u8]) -> Result<(), VCLError> {
+    pub async fn send_raw(&mut self,  &[u8]) -> Result<(), VCLError> {
         match self {
             VCLTransport::Udp { socket, peer_addr } => {
                 let addr = peer_addr.ok_or(VCLError::NoPeerAddress)?;
@@ -395,13 +369,6 @@ impl VCLTransport {
     }
 
     /// Receive raw bytes from the peer.
-    ///
-    /// - UDP: single datagram, sets peer address on first receive
-    /// - TCP: reads framed message (4-byte length prefix + data)
-    /// - WebSocket: reads next binary message (skips ping/pong/text frames)
-    /// - QUIC: reads from bidirectional stream until EOF or error
-    ///
-    /// Returns `(data, sender_addr_string)`. For QUIC/WebSocket clients, address may be placeholder.
     pub async fn recv_raw(&mut self) -> Result<(Vec<u8>, SocketAddr), VCLError> {
         match self {
             VCLTransport::Udp { socket, peer_addr } => {
@@ -500,7 +467,6 @@ impl VCLTransport {
 
     // ─── Info ───────────────────────────────────────────────────────────────
 
-    /// Returns the local address this transport is bound to.
     pub fn local_addr(&self) -> Option<SocketAddr> {
         match self {
             VCLTransport::Udp { socket, .. }          => socket.local_addr().ok(),
@@ -516,7 +482,6 @@ impl VCLTransport {
         }
     }
 
-    /// Returns the remote peer address if known.
     pub fn peer_addr(&self) -> Option<SocketAddr> {
         match self {
             VCLTransport::Udp { peer_addr, .. }        => *peer_addr,
@@ -532,14 +497,12 @@ impl VCLTransport {
         }
     }
 
-    /// Set the peer address for UDP transport.
     pub fn set_peer_addr(&mut self, addr: SocketAddr) {
         if let VCLTransport::Udp { peer_addr, .. } = self {
             *peer_addr = Some(addr);
         }
     }
 
-    /// Returns the [`TransportMode`] of this transport.
     pub fn mode(&self) -> TransportMode {
         match self {
             VCLTransport::Udp { .. } => TransportMode::Udp,
@@ -554,7 +517,6 @@ impl VCLTransport {
         }
     }
 
-    /// Returns `true` if this is a TCP transport.
     pub fn is_tcp(&self) -> bool {
         matches!(
             self,
@@ -562,12 +524,10 @@ impl VCLTransport {
         )
     }
 
-    /// Returns `true` if this is a UDP transport.
     pub fn is_udp(&self) -> bool {
         matches!(self, VCLTransport::Udp { .. })
     }
 
-    /// Returns `true` if this is a WebSocket transport.
     pub fn is_websocket(&self) -> bool {
         matches!(
             self,
@@ -577,7 +537,6 @@ impl VCLTransport {
         )
     }
 
-    /// Returns `true` if this is a QUIC transport.
     #[cfg(feature = "quic")]
     pub fn is_quic(&self) -> bool {
         matches!(self, VCLTransport::Quic { .. } | VCLTransport::QuicListener { .. })
@@ -633,6 +592,7 @@ impl ServerCertVerifier for SkipServerVerification {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::sync::oneshot;
 
     #[tokio::test]
     async fn test_udp_bind() {
@@ -782,14 +742,17 @@ mod tests {
         let local_addr = listener.local_addr().unwrap();
         let addr_str = local_addr.to_string();
 
-        // Use tokio::join! to synchronize connection and stream acceptance
-        let (server_result, client_result) = tokio::join!(
-            listener.accept(),
-            VCLTransport::connect_quic(&addr_str)
-        );
+        let (tx, rx) = oneshot::channel::<VCLTransport>();
+        
+        let server_handle = tokio::spawn(async move {
+            let server = listener.accept().await.unwrap();
+            let _ = tx.send(server);
+        });
 
-        let mut server = server_result.unwrap();
-        let mut client = client_result.unwrap();
+        let mut client = VCLTransport::connect_quic(&addr_str).await.unwrap();
+        
+        let mut server = rx.await.unwrap();
+        server_handle.await.unwrap();
 
         client.send_raw(b"hello quic").await.unwrap();
         let (data, _) = server.recv_raw().await.unwrap();
@@ -803,13 +766,16 @@ mod tests {
         let local_addr = listener.local_addr().unwrap();
         let addr_str = local_addr.to_string();
 
-        let (server_result, client_result) = tokio::join!(
-            listener.accept(),
-            VCLTransport::connect_quic(&addr_str)
-        );
+        let (tx, rx) = oneshot::channel::<VCLTransport>();
+        
+        let server_handle = tokio::spawn(async move {
+            let server = listener.accept().await.unwrap();
+            let _ = tx.send(server);
+        });
 
-        let mut server = server_result.unwrap();
-        let mut client = client_result.unwrap();
+        let mut client = VCLTransport::connect_quic(&addr_str).await.unwrap();
+        let mut server = rx.await.unwrap();
+        server_handle.await.unwrap();
 
         for i in 0..5u8 {
             let msg = vec![i; 150];
@@ -826,13 +792,16 @@ mod tests {
         let local_addr = listener.local_addr().unwrap();
         let addr_str = local_addr.to_string();
 
-        let (server_result, client_result) = tokio::join!(
-            listener.accept(),
-            VCLTransport::connect_quic(&addr_str)
-        );
+        let (tx, rx) = oneshot::channel::<VCLTransport>();
+        
+        let server_handle = tokio::spawn(async move {
+            let server = listener.accept().await.unwrap();
+            let _ = tx.send(server);
+        });
 
-        let mut server = server_result.unwrap();
-        let mut client = client_result.unwrap();
+        let mut client = VCLTransport::connect_quic(&addr_str).await.unwrap();
+        let mut server = rx.await.unwrap();
+        server_handle.await.unwrap();
 
         let payload = vec![0xABu8; 8192];
         client.send_raw(&payload).await.unwrap();
@@ -864,13 +833,16 @@ mod tests {
         let local_addr = listener.local_addr().unwrap();
         let addr_str = local_addr.to_string();
 
-        let (server_result, client_result) = tokio::join!(
-            listener.accept(),
-            VCLTransport::connect_quic(&addr_str)
-        );
+        let (tx, rx) = oneshot::channel::<VCLTransport>();
+        
+        let server_handle = tokio::spawn(async move {
+            let server = listener.accept().await.unwrap();
+            let _ = tx.send(server);
+        });
 
-        let server = server_result.unwrap();
-        let client = client_result.unwrap();
+        let client = VCLTransport::connect_quic(&addr_str).await.unwrap();
+        let server = rx.await.unwrap();
+        server_handle.await.unwrap();
 
         assert!(server.local_addr().is_some());
         assert!(server.peer_addr().is_none());
@@ -887,12 +859,17 @@ mod tests {
         let local_addr = listener.local_addr().unwrap();
         let addr_str = local_addr.to_string();
 
-        let (server_result, client_result) = tokio::join!(
-            listener.accept(),
-            VCLTransport::connect_quic(&addr_str)
-        );
+        let (tx, rx) = oneshot::channel::<VCLTransport>();
+        
+        let server_handle = tokio::spawn(async move {
+            let server = listener.accept().await.unwrap();
+            let _ = tx.send(server);
+        });
 
-        let server = server_result.unwrap();
+        let _client = VCLTransport::connect_quic(&addr_str).await.unwrap();
+        let server = rx.await.unwrap();
+        server_handle.await.unwrap();
+        
         assert_eq!(server.mode(), TransportMode::Udp);
     }
 
