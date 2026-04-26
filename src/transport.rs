@@ -192,6 +192,7 @@ impl VCLTransport {
         
         transport_config.max_concurrent_bidi_streams(100u32.into());
         transport_config.max_concurrent_uni_streams(0u8.into());
+        transport_config.max_idle_timeout(None); // Disable idle timeout for tests/stability
         server_config.transport_config(Arc::new(transport_config));
 
         let endpoint = Endpoint::server(server_config, bind_addr)
@@ -227,6 +228,7 @@ impl VCLTransport {
         let mut transport_config = quinn::TransportConfig::default();
         transport_config.max_concurrent_bidi_streams(100u32.into());
         transport_config.max_concurrent_uni_streams(0u8.into());
+        transport_config.max_idle_timeout(None); // Disable idle timeout
         client_config.transport_config(Arc::new(transport_config));
 
         let endpoint = Endpoint::client(local_addr)
@@ -313,7 +315,7 @@ impl VCLTransport {
     // ─── Send / Recv ─────────────────────────────────────────────────────────
 
     /// Send raw bytes to the peer.
-    pub async fn send_raw(&mut self, data: &[u8]) -> Result<(), VCLError> {
+    pub async fn send_raw(&mut self,  &[u8]) -> Result<(), VCLError> {
         match self {
             VCLTransport::Udp { socket, peer_addr } => {
                 let addr = peer_addr.ok_or(VCLError::NoPeerAddress)?;
@@ -465,7 +467,7 @@ impl VCLTransport {
         }
     }
 
-    // ─── Info ───────────────────────────────────────────────────────────────
+    // ─── Info ──────────────────────────────────────────────────────────────
 
     pub fn local_addr(&self) -> Option<SocketAddr> {
         match self {
@@ -751,6 +753,9 @@ mod tests {
 
         let mut client = VCLTransport::connect_quic(&addr_str).await.unwrap();
         
+        // Allow handshake and stream setup to settle
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
         let mut server = rx.await.unwrap();
         server_handle.await.unwrap();
 
@@ -774,6 +779,8 @@ mod tests {
         });
 
         let mut client = VCLTransport::connect_quic(&addr_str).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
         let mut server = rx.await.unwrap();
         server_handle.await.unwrap();
 
@@ -800,6 +807,8 @@ mod tests {
         });
 
         let mut client = VCLTransport::connect_quic(&addr_str).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
         let mut server = rx.await.unwrap();
         server_handle.await.unwrap();
 
@@ -841,6 +850,8 @@ mod tests {
         });
 
         let client = VCLTransport::connect_quic(&addr_str).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
         let server = rx.await.unwrap();
         server_handle.await.unwrap();
 
@@ -867,6 +878,8 @@ mod tests {
         });
 
         let _client = VCLTransport::connect_quic(&addr_str).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
         let server = rx.await.unwrap();
         server_handle.await.unwrap();
         
