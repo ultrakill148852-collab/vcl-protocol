@@ -339,7 +339,7 @@ impl VCLTransport {
     /// - TCP: 4-byte length prefix + data
     /// - WebSocket: binary message
     /// - QUIC: writes to bidirectional stream
-    pub async fn send_raw(&mut self,  &[u8]) -> Result<(), VCLError> {
+    pub async fn send_raw(&mut self, data: &[u8]) -> Result<(), VCLError> {
         match self {
             VCLTransport::Udp { socket, peer_addr } => {
                 let addr = peer_addr.ok_or(VCLError::NoPeerAddress)?;
