@@ -190,9 +190,10 @@ impl VCLTransport {
         let mut server_config = ServerConfig::with_crypto(Arc::new(quic_server_config));
         let mut transport_config = quinn::TransportConfig::default();
         
-        transport_config.max_concurrent_bidi_streams(100u32.into());
-        transport_config.max_concurrent_uni_streams(0u8.into());
+        transport_config.max_concurrent_bidi_streams(1u32.into());
+        transport_config.max_concurrent_uni_streams(0u32.into());
         transport_config.max_idle_timeout(None);
+        transport_config.initial_mtu(1200);
         server_config.transport_config(Arc::new(transport_config));
 
         let endpoint = Endpoint::server(server_config, bind_addr)
@@ -226,9 +227,10 @@ impl VCLTransport {
 
         let mut client_config = ClientConfig::new(Arc::new(quic_client_config));
         let mut transport_config = quinn::TransportConfig::default();
-        transport_config.max_concurrent_bidi_streams(100u32.into());
-        transport_config.max_concurrent_uni_streams(0u8.into());
+        transport_config.max_concurrent_bidi_streams(1u32.into());
+        transport_config.max_concurrent_uni_streams(0u32.into());
         transport_config.max_idle_timeout(None);
+        transport_config.initial_mtu(1200);
         client_config.transport_config(Arc::new(transport_config));
 
         let endpoint = Endpoint::client(local_addr)
@@ -738,7 +740,6 @@ mod tests {
     #[cfg(feature = "quic")]
     #[tokio::test]
     async fn test_quic_bind_and_accept() {
-        // Bind to 0.0.0.0 to ensure localhost connections are accepted
         let listener = VCLTransport::bind_quic("0.0.0.0:0").await.unwrap();
         assert!(listener.is_quic());
         let local_addr = listener.local_addr().unwrap();
