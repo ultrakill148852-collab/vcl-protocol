@@ -111,7 +111,7 @@ pub enum VCLTransport {
 }
 
 impl VCLTransport {
-    // ─── Constructors ────────────────────────────────────────────────────────
+    // ─── Constructors ───────────────────────────────────────────────────────
 
     /// Bind a UDP socket to a local address.
     pub async fn bind_udp(addr: &str) -> Result<Self, VCLError> {
@@ -190,8 +190,6 @@ impl VCLTransport {
         let mut server_config = ServerConfig::with_crypto(Arc::new(quic_server_config));
         let mut transport_config = quinn::TransportConfig::default();
         
-        // FIX: Prevents hang on localhost by disabling MTU discovery
-        transport_config.initial_mtu(1200);
         transport_config.max_concurrent_bidi_streams(100u32.into());
         transport_config.max_concurrent_uni_streams(0u8.into());
         transport_config.max_idle_timeout(None);
@@ -228,9 +226,6 @@ impl VCLTransport {
 
         let mut client_config = ClientConfig::new(Arc::new(quic_client_config));
         let mut transport_config = quinn::TransportConfig::default();
-        
-        // FIX: Prevents hang on localhost by disabling MTU discovery
-        transport_config.initial_mtu(1200);
         transport_config.max_concurrent_bidi_streams(100u32.into());
         transport_config.max_concurrent_uni_streams(0u8.into());
         transport_config.max_idle_timeout(None);
@@ -743,10 +738,11 @@ mod tests {
     #[cfg(feature = "quic")]
     #[tokio::test]
     async fn test_quic_bind_and_accept() {
-        let listener = VCLTransport::bind_quic("127.0.0.1:0").await.unwrap();
+        // Bind to 0.0.0.0 to ensure localhost connections are accepted
+        let listener = VCLTransport::bind_quic("0.0.0.0:0").await.unwrap();
         assert!(listener.is_quic());
         let local_addr = listener.local_addr().unwrap();
-        let addr_str = local_addr.to_string();
+        let addr_str = format!("127.0.0.1:{}", local_addr.port());
 
         let (server_result, client_result) = tokio::join!(
             listener.accept(),
@@ -755,9 +751,6 @@ mod tests {
 
         let mut server = server_result.unwrap();
         let mut client = client_result.unwrap();
-
-        // Ensure runtime processes the connection
-        tokio::task::yield_now().await;
 
         client.send_raw(b"hello quic").await.unwrap();
         let (data, _) = server.recv_raw().await.unwrap();
@@ -767,9 +760,9 @@ mod tests {
     #[cfg(feature = "quic")]
     #[tokio::test]
     async fn test_quic_multiple_messages() {
-        let listener = VCLTransport::bind_quic("127.0.0.1:0").await.unwrap();
+        let listener = VCLTransport::bind_quic("0.0.0.0:0").await.unwrap();
         let local_addr = listener.local_addr().unwrap();
-        let addr_str = local_addr.to_string();
+        let addr_str = format!("127.0.0.1:{}", local_addr.port());
 
         let (server_result, client_result) = tokio::join!(
             listener.accept(),
@@ -778,7 +771,6 @@ mod tests {
 
         let mut server = server_result.unwrap();
         let mut client = client_result.unwrap();
-        tokio::task::yield_now().await;
 
         for i in 0..5u8 {
             let msg = vec![i; 150];
@@ -791,9 +783,9 @@ mod tests {
     #[cfg(feature = "quic")]
     #[tokio::test]
     async fn test_quic_large_payload() {
-        let listener = VCLTransport::bind_quic("127.0.0.1:0").await.unwrap();
+        let listener = VCLTransport::bind_quic("0.0.0.0:0").await.unwrap();
         let local_addr = listener.local_addr().unwrap();
-        let addr_str = local_addr.to_string();
+        let addr_str = format!("127.0.0.1:{}", local_addr.port());
 
         let (server_result, client_result) = tokio::join!(
             listener.accept(),
@@ -802,7 +794,6 @@ mod tests {
 
         let mut server = server_result.unwrap();
         let mut client = client_result.unwrap();
-        tokio::task::yield_now().await;
 
         let payload = vec![0xABu8; 8192];
         client.send_raw(&payload).await.unwrap();
@@ -827,12 +818,12 @@ mod tests {
     #[cfg(feature = "quic")]
     #[tokio::test]
     async fn test_quic_local_and_peer_addr() {
-        let listener = VCLTransport::bind_quic("127.0.0.1:0").await.unwrap();
+        let listener = VCLTransport::bind_quic("0.0.0.0:0").await.unwrap();
         assert!(listener.local_addr().is_some());
         assert!(listener.peer_addr().is_none());
 
         let local_addr = listener.local_addr().unwrap();
-        let addr_str = local_addr.to_string();
+        let addr_str = format!("127.0.0.1:{}", local_addr.port());
 
         let (server_result, client_result) = tokio::join!(
             listener.accept(),
@@ -841,7 +832,6 @@ mod tests {
 
         let server = server_result.unwrap();
         let client = client_result.unwrap();
-        tokio::task::yield_now().await;
 
         assert!(server.local_addr().is_some());
         assert!(server.peer_addr().is_none());
@@ -852,20 +842,18 @@ mod tests {
     #[cfg(feature = "quic")]
     #[tokio::test]
     async fn test_quic_mode_returns_udp() {
-        let listener = VCLTransport::bind_quic("127.0.0.1:0").await.unwrap();
+        let listener = VCLTransport::bind_quic("0.0.0.0:0").await.unwrap();
         assert_eq!(listener.mode(), TransportMode::Udp);
 
         let local_addr = listener.local_addr().unwrap();
-        let addr_str = local_addr.to_string();
+        let addr_str = format!("127.0.0.1:{}", local_addr.port());
 
-        // FIX: Prefix with underscore to suppress unused variable warning
         let (server_result, _client_result) = tokio::join!(
             listener.accept(),
             VCLTransport::connect_quic(&addr_str)
         );
 
         let server = server_result.unwrap();
-        tokio::task::yield_now().await;
         
         assert_eq!(server.mode(), TransportMode::Udp);
     }
