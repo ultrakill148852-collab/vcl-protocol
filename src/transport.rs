@@ -320,7 +320,7 @@ impl VCLTransport {
     // ─── Send / Recv ─────────────────────────────────────────────────────────
 
     /// Send raw bytes to the peer.
-    pub async fn send_raw(&mut self,  &[u8]) -> Result<(), VCLError> {
+    pub async fn send_raw(&mut self, data: &[u8]) -> Result<(), VCLError> {
         match self {
             VCLTransport::Udp { socket, peer_addr } => {
                 let addr = peer_addr.ok_or(VCLError::NoPeerAddress)?;
@@ -472,7 +472,7 @@ impl VCLTransport {
         }
     }
 
-    // ─── Info ──────────────────────────────────────────────────────────────
+    // ─── Info ─────────────────────────────────────────────────────────────
 
     pub fn local_addr(&self) -> Option<SocketAddr> {
         match self {
@@ -858,7 +858,8 @@ mod tests {
         let local_addr = listener.local_addr().unwrap();
         let addr_str = local_addr.to_string();
 
-        let (server_result, client_result) = tokio::join!(
+        // FIX: Prefix with underscore to suppress unused variable warning
+        let (server_result, _client_result) = tokio::join!(
             listener.accept(),
             VCLTransport::connect_quic(&addr_str)
         );
