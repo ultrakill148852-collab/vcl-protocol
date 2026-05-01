@@ -190,6 +190,8 @@ impl VCLTransport {
         let mut server_config = ServerConfig::with_crypto(Arc::new(quic_server_config));
         let mut transport_config = quinn::TransportConfig::default();
         
+        // FIX: Prevents hang on localhost by disabling MTU discovery
+        transport_config.initial_mtu(1200);
         transport_config.max_concurrent_bidi_streams(100u32.into());
         transport_config.max_concurrent_uni_streams(0u8.into());
         transport_config.max_idle_timeout(None);
@@ -226,6 +228,9 @@ impl VCLTransport {
 
         let mut client_config = ClientConfig::new(Arc::new(quic_client_config));
         let mut transport_config = quinn::TransportConfig::default();
+        
+        // FIX: Prevents hang on localhost by disabling MTU discovery
+        transport_config.initial_mtu(1200);
         transport_config.max_concurrent_bidi_streams(100u32.into());
         transport_config.max_concurrent_uni_streams(0u8.into());
         transport_config.max_idle_timeout(None);
@@ -315,7 +320,7 @@ impl VCLTransport {
     // ─── Send / Recv ─────────────────────────────────────────────────────────
 
     /// Send raw bytes to the peer.
-    pub async fn send_raw(&mut self, data: &[u8]) -> Result<(), VCLError> {
+    pub async fn send_raw(&mut self,  &[u8]) -> Result<(), VCLError> {
         match self {
             VCLTransport::Udp { socket, peer_addr } => {
                 let addr = peer_addr.ok_or(VCLError::NoPeerAddress)?;
@@ -467,7 +472,7 @@ impl VCLTransport {
         }
     }
 
-    // ─── Info ───────────────────────────────────────────────────────────────
+    // ─── Info ──────────────────────────────────────────────────────────────
 
     pub fn local_addr(&self) -> Option<SocketAddr> {
         match self {
@@ -751,7 +756,7 @@ mod tests {
         let mut server = server_result.unwrap();
         let mut client = client_result.unwrap();
 
-        // Allow QUIC handshake & stream negotiation to complete
+        // Ensure runtime processes the connection
         tokio::task::yield_now().await;
 
         client.send_raw(b"hello quic").await.unwrap();
