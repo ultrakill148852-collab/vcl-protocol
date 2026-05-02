@@ -39,7 +39,6 @@ use tokio_tungstenite::{
 use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
 use tracing::{debug, info, warn};
 
 // QUIC Dependencies
@@ -112,7 +111,7 @@ pub enum VCLTransport {
 }
 
 impl VCLTransport {
-    // ─── Constructors ───────────────────────────────────────────────────────
+    // ─── Constructors ────────────────────────────────────────────────────────
 
     /// Bind a UDP socket to a local address.
     pub async fn bind_udp(addr: &str) -> Result<Self, VCLError> {
@@ -344,7 +343,7 @@ impl VCLTransport {
     // ─── Send / Recv ─────────────────────────────────────────────────────────
 
     /// Send raw bytes to the peer.
-    pub async fn send_raw(&mut self, data: &[u8]) -> Result<(), VCLError> {
+    pub async fn send_raw(&mut self,  &[u8]) -> Result<(), VCLError> {
         match self {
             VCLTransport::Udp { socket, peer_addr } => {
                 let addr = peer_addr.ok_or(VCLError::NoPeerAddress)?;
@@ -384,10 +383,8 @@ impl VCLTransport {
             #[cfg(feature = "quic")]
             VCLTransport::Quic { send, .. } => {
                 debug!("QUIC send: {} bytes", data.len());
-                // FIX: Removed framing, just write data directly
                 send.write_all(data).await
                     .map_err(|e| VCLError::IoError(format!("QUIC send failed: {}", e)))?;
-                // Signal end of message
                 send.finish()
                     .map_err(|e| VCLError::IoError(format!("QUIC send finish failed: {}", e)))?;
                 debug!(size = data.len(), "QUIC send");
@@ -492,12 +489,11 @@ impl VCLTransport {
             #[cfg(feature = "quic")]
             VCLTransport::Quic { recv, .. } => {
                 debug!("QUIC recv waiting");
-                // FIX: Read until EOF (stream finished)
-                let mut buf = Vec::new();
-                let n = recv.read_to_end(&mut buf).await
+                // FIX: Quinn's read_to_end takes size_limit and returns Vec<u8>
+                let buf = recv.read_to_end(UDP_MAX_SIZE).await
                     .map_err(|e| VCLError::IoError(format!("QUIC recv failed: {}", e)))?;
                 
-                if n == 0 {
+                if buf.is_empty() {
                     warn!("QUIC stream closed with no data");
                     return Err(VCLError::IoError("QUIC stream closed by peer".to_string()));
                 }
@@ -818,7 +814,7 @@ mod tests {
         });
 
         info!("TEST: Sleeping 100ms to let server start");
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         info!("TEST: Connecting QUIC client to {}", addr_str);
         let mut client = VCLTransport::connect_quic(&addr_str).await.unwrap();
@@ -847,7 +843,7 @@ mod tests {
             listener.accept().await
         });
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let mut client = VCLTransport::connect_quic(&addr_str).await.unwrap();
         let mut server_conn = server_task.await.unwrap().unwrap();
@@ -872,7 +868,7 @@ mod tests {
             listener.accept().await
         });
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let mut client = VCLTransport::connect_quic(&addr_str).await.unwrap();
         let mut server_conn = server_task.await.unwrap().unwrap();
@@ -911,7 +907,7 @@ mod tests {
             listener.accept().await
         });
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let client = VCLTransport::connect_quic(&addr_str).await.unwrap();
         let server_conn = server_task.await.unwrap().unwrap();
@@ -935,7 +931,7 @@ mod tests {
             listener.accept().await
         });
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
         let _client = VCLTransport::connect_quic(&addr_str).await.unwrap();
         let server_conn = server_task.await.unwrap().unwrap();
