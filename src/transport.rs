@@ -317,7 +317,7 @@ impl VCLTransport {
     // ─── Send / Recv ─────────────────────────────────────────────────────────
 
     /// Send raw bytes to the peer.
-    pub async fn send_raw(&mut self, data: &[u8]) -> Result<(), VCLError> {
+    pub async fn send_raw(&mut self,  &[u8]) -> Result<(), VCLError> {
         match self {
             VCLTransport::Udp { socket, peer_addr } => {
                 let addr = peer_addr.ok_or(VCLError::NoPeerAddress)?;
@@ -352,8 +352,15 @@ impl VCLTransport {
             }
             #[cfg(feature = "quic")]
             VCLTransport::Quic { send, .. } => {
+                // FIX: Add length prefix framing for QUIC (like TCP)
+                let len = data.len() as u32;
+                send.write_all(&len.to_be_bytes()).await
+                    .map_err(|e| VCLError::IoError(format!("QUIC send length failed: {}", e)))?;
                 send.write_all(data).await
-                    .map_err(|e| VCLError::IoError(format!("QUIC send failed: {}", e)))?;
+                    .map_err(|e| VCLError::IoError(format!("QUIC send data failed: {}", e)))?;
+                // Signal end of message
+                send.finish()
+                    .map_err(|e| VCLError::IoError(format!("QUIC send finish failed: {}", e)))?;
                 debug!(size = data.len(), "QUIC send");
                 Ok(())
             }
@@ -440,15 +447,19 @@ impl VCLTransport {
             }
             #[cfg(feature = "quic")]
             VCLTransport::Quic { recv, .. } => {
-                let mut buf = vec![0u8; UDP_MAX_SIZE];
-                let n: Option<usize> = recv.read(&mut buf).await
-                    .map_err(|e| VCLError::IoError(format!("QUIC recv failed: {}", e)))?;
-                
-                match n {
-                    Some(0) => return Err(VCLError::IoError("QUIC stream closed by peer".to_string())),
-                    Some(n) => buf.truncate(n),
-                    None => return Err(VCLError::IoError("QUIC stream closed unexpectedly".to_string())),
+                // FIX: Read length prefix first (like TCP)
+                let mut header = [0u8; TCP_HEADER_SIZE];
+                recv.read_exact(&mut header).await
+                    .map_err(|e| VCLError::IoError(format!("QUIC read header: {}", e)))?;
+                let msg_len = u32::from_be_bytes(header) as usize;
+                if msg_len == 0 || msg_len > UDP_MAX_SIZE {
+                    return Err(VCLError::InvalidPacket(format!(
+                        "QUIC frame length out of range: {}", msg_len
+                    )));
                 }
+                let mut buf = vec![0u8; msg_len];
+                recv.read_exact(&mut buf).await
+                    .map_err(|e| VCLError::IoError(format!("QUIC read body: {}", e)))?;
                 
                 debug!(size = buf.len(), "QUIC recv");
                 let placeholder: SocketAddr = "0.0.0.0:0".parse().unwrap();
