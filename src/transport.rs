@@ -321,7 +321,7 @@ impl VCLTransport {
     // ─── Send / Recv ─────────────────────────────────────────────────────────
 
     /// Send raw bytes to the peer.
-    pub async fn send_raw(&mut self,  &[u8]) -> Result<(), VCLError> {
+    pub async fn send_raw(&mut self, data:  &[u8]) -> Result<(), VCLError> {
         match self {
             VCLTransport::Udp { socket, peer_addr } => {
                 let addr = peer_addr.ok_or(VCLError::NoPeerAddress)?;
