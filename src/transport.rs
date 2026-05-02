@@ -111,7 +111,7 @@ pub enum VCLTransport {
 }
 
 impl VCLTransport {
-    // ─── Constructors ──────────────────────────────────────────────────────
+    // ─── Constructors ────────────────────────────────────────────────────────
 
     /// Bind a UDP socket to a local address.
     pub async fn bind_udp(addr: &str) -> Result<Self, VCLError> {
@@ -194,8 +194,6 @@ impl VCLTransport {
         transport_config.max_concurrent_uni_streams(0u8.into());
         transport_config.max_idle_timeout(None);
         transport_config.initial_mtu(1200);
-        // FIX: Disabling MTU discovery prevents hanging on localhost loopback
-        transport_config.disable_mtu_discovery();
         server_config.transport_config(Arc::new(transport_config));
 
         let endpoint = Endpoint::server(server_config, bind_addr)
@@ -233,8 +231,6 @@ impl VCLTransport {
         transport_config.max_concurrent_uni_streams(0u8.into());
         transport_config.max_idle_timeout(None);
         transport_config.initial_mtu(1200);
-        // FIX: Disabling MTU discovery prevents hanging on localhost loopback
-        transport_config.disable_mtu_discovery();
         client_config.transport_config(Arc::new(transport_config));
 
         let endpoint = Endpoint::client(local_addr)
@@ -321,7 +317,7 @@ impl VCLTransport {
     // ─── Send / Recv ─────────────────────────────────────────────────────────
 
     /// Send raw bytes to the peer.
-    pub async fn send_raw(&mut self, data:  &[u8]) -> Result<(), VCLError> {
+    pub async fn send_raw(&mut self, data: &[u8]) -> Result<(), VCLError> {
         match self {
             VCLTransport::Udp { socket, peer_addr } => {
                 let addr = peer_addr.ok_or(VCLError::NoPeerAddress)?;
@@ -473,7 +469,7 @@ impl VCLTransport {
         }
     }
 
-    // ─── Info ─────────────────────────────────────────────────────────────
+    // ─── Info ───────────────────────────────────────────────────────────────
 
     pub fn local_addr(&self) -> Option<SocketAddr> {
         match self {
