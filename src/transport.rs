@@ -682,7 +682,6 @@ mod tests {
             server_listener.accept().await
         });
         
-        // Small sleep to ensure server is ready for handshake
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         
         let mut client_conn = VCLTransport::connect_ws(&server_addr).await.unwrap();
@@ -762,6 +761,8 @@ mod tests {
             listener.accept().await
         });
 
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
         let mut client = VCLTransport::connect_quic(&addr_str).await.unwrap();
         let mut server_conn = server_task.await.unwrap().unwrap();
 
@@ -780,6 +781,8 @@ mod tests {
         let server_task = tokio::spawn(async move {
             listener.accept().await
         });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         let mut client = VCLTransport::connect_quic(&addr_str).await.unwrap();
         let mut server_conn = server_task.await.unwrap().unwrap();
@@ -802,6 +805,8 @@ mod tests {
         let server_task = tokio::spawn(async move {
             listener.accept().await
         });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         let mut client = VCLTransport::connect_quic(&addr_str).await.unwrap();
         let mut server_conn = server_task.await.unwrap().unwrap();
@@ -840,6 +845,8 @@ mod tests {
             listener.accept().await
         });
 
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
         let client = VCLTransport::connect_quic(&addr_str).await.unwrap();
         let server_conn = server_task.await.unwrap().unwrap();
 
@@ -861,6 +868,8 @@ mod tests {
         let server_task = tokio::spawn(async move {
             listener.accept().await
         });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         let _client = VCLTransport::connect_quic(&addr_str).await.unwrap();
         let server_conn = server_task.await.unwrap().unwrap();
