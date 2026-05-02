@@ -39,7 +39,8 @@ use tokio_tungstenite::{
 use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tracing::{debug, info};
+use std::time::Duration;
+use tracing::{debug, info, warn};
 
 // QUIC Dependencies
 #[cfg(feature = "quic")]
@@ -111,10 +112,11 @@ pub enum VCLTransport {
 }
 
 impl VCLTransport {
-    // ─── Constructors ────────────────────────────────────────────────────────
+    // ─── Constructors ───────────────────────────────────────────────────────
 
     /// Bind a UDP socket to a local address.
     pub async fn bind_udp(addr: &str) -> Result<Self, VCLError> {
+        debug!("Binding UDP socket to {}", addr);
         let socket = UdpSocket::bind(addr).await?;
         let local = socket.local_addr()
             .map(|a| a.to_string())
@@ -125,6 +127,7 @@ impl VCLTransport {
 
     /// Bind a TCP listener to a local address (server side).
     pub async fn bind_tcp(addr: &str) -> Result<Self, VCLError> {
+        debug!("Binding TCP listener to {}", addr);
         let listener = TcpListener::bind(addr).await?;
         let local_addr = listener.local_addr()?;
         info!(addr = %local_addr, "TCP transport bound");
@@ -133,6 +136,7 @@ impl VCLTransport {
 
     /// Connect a TCP stream to a remote address (client side).
     pub async fn connect_tcp(addr: &str) -> Result<Self, VCLError> {
+        debug!("Connecting TCP to {}", addr);
         let parsed: SocketAddr = addr.parse()?;
         let stream = TcpStream::connect(parsed).await?;
         let peer_addr = stream.peer_addr()?;
@@ -144,6 +148,7 @@ impl VCLTransport {
     ///
     /// Call [`accept()`](VCLTransport::accept) to wait for an incoming WS connection.
     pub async fn bind_ws(addr: &str) -> Result<Self, VCLError> {
+        debug!("Binding WebSocket listener to {}", addr);
         let listener = TcpListener::bind(addr).await?;
         let local_addr = listener.local_addr()?;
         info!(addr = %local_addr, "WebSocket transport bound");
@@ -154,6 +159,7 @@ impl VCLTransport {
     ///
     /// `url` should be in the form `ws://host:port/path` or `wss://host:port/path`.
     pub async fn connect_ws(url: &str) -> Result<Self, VCLError> {
+        debug!("Connecting WebSocket to {}", url);
         let peer_addr = url.to_string();
         let (stream, _response) = connect_async(url)
             .await
@@ -169,14 +175,17 @@ impl VCLTransport {
     /// Requires the `quic` feature to be enabled in `Cargo.toml`.
     #[cfg(feature = "quic")]
     pub async fn bind_quic(addr: &str) -> Result<Self, VCLError> {
+        info!("Binding QUIC endpoint to {}", addr);
         let bind_addr: SocketAddr = addr.parse()?;
         
+        debug!("Generating self-signed certificate for QUIC");
         let cert = generate_simple_self_signed(vec!["vcl.local".into()])
             .map_err(|e| VCLError::CryptoError(e.to_string()))?;
         let cert_der = CertificateDer::from(cert.cert.der().clone());
         let key_der = PrivateKeyDer::try_from(cert.key_pair.serialize_der())
             .map_err(|e| VCLError::CryptoError(e.to_string()))?;
 
+        debug!("Configuring QUIC server TLS");
         let mut rustls_server_config = rustls::ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(vec![cert_der], key_der)
@@ -184,6 +193,7 @@ impl VCLTransport {
             
         rustls_server_config.alpn_protocols = vec![b"h3".to_vec()];
 
+        debug!("Creating QUIC server config");
         let quic_server_config = quinn::crypto::rustls::QuicServerConfig::try_from(rustls_server_config)
             .map_err(|e| VCLError::CryptoError(e.to_string()))?;
 
@@ -196,6 +206,7 @@ impl VCLTransport {
         transport_config.initial_mtu(1200);
         server_config.transport_config(Arc::new(transport_config));
 
+        debug!("Creating QUIC endpoint server");
         let endpoint = Endpoint::server(server_config, bind_addr)
             .map_err(|e| VCLError::IoError(e.to_string()))?;
 
@@ -212,9 +223,11 @@ impl VCLTransport {
     /// Requires the `quic` feature.
     #[cfg(feature = "quic")]
     pub async fn connect_quic(server_addr: &str) -> Result<Self, VCLError> {
+        info!("Connecting QUIC client to {}", server_addr);
         let addr: SocketAddr = server_addr.parse()?;
         let local_addr = SocketAddr::from(([0, 0, 0, 0], 0));
 
+        debug!("Configuring QUIC client TLS (insecure)");
         let mut rustls_client_config = rustls::ClientConfig::builder()
             .dangerous()
             .with_custom_certificate_verifier(Arc::new(SkipServerVerification))
@@ -222,6 +235,7 @@ impl VCLTransport {
             
         rustls_client_config.alpn_protocols = vec![b"h3".to_vec()];
 
+        debug!("Creating QUIC client config");
         let quic_client_config = quinn::crypto::rustls::QuicClientConfig::try_from(rustls_client_config)
             .map_err(|e| VCLError::CryptoError(e.to_string()))?;
 
@@ -233,15 +247,19 @@ impl VCLTransport {
         transport_config.initial_mtu(1200);
         client_config.transport_config(Arc::new(transport_config));
 
+        debug!("Creating QUIC endpoint client");
         let endpoint = Endpoint::client(local_addr)
             .map_err(|e| VCLError::IoError(e.to_string()))?;
 
+        info!("Initiating QUIC connection to {}", addr);
         let connecting = endpoint.connect_with(client_config, addr, "vcl.local")
             .map_err(|e| VCLError::IoError(format!("QUIC connect failed: {}", e)))?;
         
+        debug!("Waiting for QUIC connection establishment");
         let conn = connecting.await
             .map_err(|e| VCLError::IoError(format!("QUIC connection failed: {}", e)))?;
 
+        debug!("Opening QUIC bidirectional stream");
         let (send, recv) = conn.open_bi().await
             .map_err(|e| VCLError::IoError(format!("QUIC stream open failed: {}", e)))?;
 
@@ -253,12 +271,15 @@ impl VCLTransport {
     pub async fn accept(&self) -> Result<Self, VCLError> {
         match self {
             VCLTransport::TcpListener { listener, .. } => {
+                debug!("TCP listener waiting for connection");
                 let (stream, peer_addr) = listener.accept().await?;
                 info!(peer = %peer_addr, "TCP connection accepted");
                 Ok(VCLTransport::Tcp { stream, peer_addr })
             }
             VCLTransport::WebSocketListener { listener, .. } => {
+                debug!("WebSocket listener waiting for connection");
                 let (tcp_stream, peer_addr) = listener.accept().await?;
+                debug!("Performing WebSocket handshake");
                 let ws_stream = accept_async(tcp_stream)
                     .await
                     .map_err(|e| VCLError::IoError(format!("WebSocket handshake failed: {}", e)))?;
@@ -267,21 +288,27 @@ impl VCLTransport {
             }
             #[cfg(feature = "quic")]
             VCLTransport::QuicListener { endpoint, .. } => {
+                debug!("QUIC listener waiting for connection");
                 let connecting = endpoint.accept().await
                     .ok_or_else(|| VCLError::IoError("QUIC endpoint closed".into()))?;
                 
+                debug!("Accepting QUIC connection");
                 let conn = connecting.await
                     .map_err(|e| VCLError::IoError(format!("QUIC connection failed: {}", e)))?;
                 
+                debug!("Accepting QUIC bidirectional stream");
                 let (send, recv) = conn.accept_bi().await
                     .map_err(|e| VCLError::IoError(format!("QUIC stream accept failed: {}", e)))?;
 
                 info!("QUIC connection accepted");
                 Ok(VCLTransport::Quic { endpoint: endpoint.clone(), connection: conn, send, recv })
             }
-            _ => Err(VCLError::InvalidPacket(
-                "accept() called on non-listener transport".to_string(),
-            )),
+            _ => {
+                warn!("accept() called on non-listener transport");
+                Err(VCLError::InvalidPacket(
+                    "accept() called on non-listener transport".to_string(),
+                ))
+            }
         }
     }
 
@@ -321,11 +348,13 @@ impl VCLTransport {
         match self {
             VCLTransport::Udp { socket, peer_addr } => {
                 let addr = peer_addr.ok_or(VCLError::NoPeerAddress)?;
+                debug!("UDP send to {}: {} bytes", addr, data.len());
                 socket.send_to(data, addr).await?;
                 debug!(peer = %addr, size = data.len(), "UDP send");
                 Ok(())
             }
             VCLTransport::Tcp { stream, peer_addr } => {
+                debug!("TCP send to {}: {} bytes", peer_addr, data.len());
                 let len = data.len() as u32;
                 let mut frame = Vec::with_capacity(TCP_HEADER_SIZE + data.len());
                 frame.extend_from_slice(&len.to_be_bytes());
@@ -335,6 +364,7 @@ impl VCLTransport {
                 Ok(())
             }
             VCLTransport::WebSocketClient { stream, peer_addr } => {
+                debug!("WebSocket client send to {}: {} bytes", peer_addr, data.len());
                 stream
                     .send(Message::Binary(data.to_vec()))
                     .await
@@ -343,6 +373,7 @@ impl VCLTransport {
                 Ok(())
             }
             VCLTransport::WebSocketServer { stream, peer_addr } => {
+                debug!("WebSocket server send to {}: {} bytes", peer_addr, data.len());
                 stream
                     .send(Message::Binary(data.to_vec()))
                     .await
@@ -352,12 +383,10 @@ impl VCLTransport {
             }
             #[cfg(feature = "quic")]
             VCLTransport::Quic { send, .. } => {
-                // FIX: Add length prefix framing for QUIC (like TCP)
-                let len = data.len() as u32;
-                send.write_all(&len.to_be_bytes()).await
-                    .map_err(|e| VCLError::IoError(format!("QUIC send length failed: {}", e)))?;
+                debug!("QUIC send: {} bytes", data.len());
+                // FIX: Removed framing, just write data directly
                 send.write_all(data).await
-                    .map_err(|e| VCLError::IoError(format!("QUIC send data failed: {}", e)))?;
+                    .map_err(|e| VCLError::IoError(format!("QUIC send failed: {}", e)))?;
                 // Signal end of message
                 send.finish()
                     .map_err(|e| VCLError::IoError(format!("QUIC send finish failed: {}", e)))?;
@@ -366,12 +395,14 @@ impl VCLTransport {
             }
             VCLTransport::TcpListener { .. } 
             | VCLTransport::WebSocketListener { .. } => {
+                warn!("send_raw() called on listener");
                 Err(VCLError::InvalidPacket(
                     "send_raw() called on listener — call accept() first".to_string(),
                 ))
             }
             #[cfg(feature = "quic")]
             VCLTransport::QuicListener { .. } => {
+                warn!("send_raw() called on listener");
                 Err(VCLError::InvalidPacket(
                     "send_raw() called on listener — call accept() first".to_string(),
                 ))
@@ -383,6 +414,7 @@ impl VCLTransport {
     pub async fn recv_raw(&mut self) -> Result<(Vec<u8>, SocketAddr), VCLError> {
         match self {
             VCLTransport::Udp { socket, peer_addr } => {
+                debug!("UDP recv waiting");
                 let mut buf = vec![0u8; UDP_MAX_SIZE];
                 let (len, addr) = socket.recv_from(&mut buf).await?;
                 buf.truncate(len);
@@ -393,6 +425,7 @@ impl VCLTransport {
                 Ok((buf, addr))
             }
             VCLTransport::Tcp { stream, peer_addr } => {
+                debug!("TCP recv waiting for header");
                 let mut header = [0u8; TCP_HEADER_SIZE];
                 stream.read_exact(&mut header).await
                     .map_err(|e| VCLError::IoError(format!("TCP read header: {}", e)))?;
@@ -402,6 +435,7 @@ impl VCLTransport {
                         "TCP frame length out of range: {}", msg_len
                     )));
                 }
+                debug!("TCP recv reading {} bytes", msg_len);
                 let mut buf = vec![0u8; msg_len];
                 stream.read_exact(&mut buf).await
                     .map_err(|e| VCLError::IoError(format!("TCP read body: {}", e)))?;
@@ -409,6 +443,7 @@ impl VCLTransport {
                 Ok((buf, *peer_addr))
             }
             VCLTransport::WebSocketClient { stream, peer_addr } => {
+                debug!("WebSocket client recv waiting");
                 loop {
                     let msg = stream.next().await
                         .ok_or_else(|| VCLError::IoError("WebSocket stream closed".to_string()))?
@@ -421,13 +456,18 @@ impl VCLTransport {
                             return Ok((data, placeholder));
                         }
                         Message::Close(_) => {
+                            warn!("WebSocket connection closed");
                             return Err(VCLError::IoError("WebSocket connection closed".to_string()));
                         }
-                        _ => continue,
+                        _ => {
+                            debug!("WebSocket recv skipping non-binary message");
+                            continue;
+                        }
                     }
                 }
             }
             VCLTransport::WebSocketServer { stream, peer_addr } => {
+                debug!("WebSocket server recv waiting");
                 loop {
                     let msg = stream.next().await
                         .ok_or_else(|| VCLError::IoError("WebSocket stream closed".to_string()))?
@@ -439,27 +479,28 @@ impl VCLTransport {
                             return Ok((data, *peer_addr));
                         }
                         Message::Close(_) => {
+                            warn!("WebSocket connection closed");
                             return Err(VCLError::IoError("WebSocket connection closed".to_string()));
                         }
-                        _ => continue,
+                        _ => {
+                            debug!("WebSocket recv skipping non-binary message");
+                            continue;
+                        }
                     }
                 }
             }
             #[cfg(feature = "quic")]
             VCLTransport::Quic { recv, .. } => {
-                // FIX: Read length prefix first (like TCP)
-                let mut header = [0u8; TCP_HEADER_SIZE];
-                recv.read_exact(&mut header).await
-                    .map_err(|e| VCLError::IoError(format!("QUIC read header: {}", e)))?;
-                let msg_len = u32::from_be_bytes(header) as usize;
-                if msg_len == 0 || msg_len > UDP_MAX_SIZE {
-                    return Err(VCLError::InvalidPacket(format!(
-                        "QUIC frame length out of range: {}", msg_len
-                    )));
+                debug!("QUIC recv waiting");
+                // FIX: Read until EOF (stream finished)
+                let mut buf = Vec::new();
+                let n = recv.read_to_end(&mut buf).await
+                    .map_err(|e| VCLError::IoError(format!("QUIC recv failed: {}", e)))?;
+                
+                if n == 0 {
+                    warn!("QUIC stream closed with no data");
+                    return Err(VCLError::IoError("QUIC stream closed by peer".to_string()));
                 }
-                let mut buf = vec![0u8; msg_len];
-                recv.read_exact(&mut buf).await
-                    .map_err(|e| VCLError::IoError(format!("QUIC read body: {}", e)))?;
                 
                 debug!(size = buf.len(), "QUIC recv");
                 let placeholder: SocketAddr = "0.0.0.0:0".parse().unwrap();
@@ -467,12 +508,14 @@ impl VCLTransport {
             }
             VCLTransport::TcpListener { .. } 
             | VCLTransport::WebSocketListener { .. } => {
+                warn!("recv_raw() called on listener");
                 Err(VCLError::InvalidPacket(
                     "recv_raw() called on listener — call accept() first".to_string(),
                 ))
             }
             #[cfg(feature = "quic")]
             VCLTransport::QuicListener { .. } => {
+                warn!("recv_raw() called on listener");
                 Err(VCLError::InvalidPacket(
                     "recv_raw() called on listener — call accept() first".to_string(),
                 ))
@@ -763,28 +806,39 @@ mod tests {
     #[cfg(feature = "quic")]
     #[tokio::test]
     async fn test_quic_bind_and_accept() {
+        info!("TEST: test_quic_bind_and_accept starting");
         let listener = VCLTransport::bind_quic("0.0.0.0:0").await.unwrap();
         assert!(listener.is_quic());
         let local_addr = listener.local_addr().unwrap();
         let addr_str = format!("127.0.0.1:{}", local_addr.port());
 
         let server_task = tokio::spawn(async move {
+            info!("TEST: QUIC server task spawned, calling accept");
             listener.accept().await
         });
 
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        info!("TEST: Sleeping 100ms to let server start");
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
+        info!("TEST: Connecting QUIC client to {}", addr_str);
         let mut client = VCLTransport::connect_quic(&addr_str).await.unwrap();
+        info!("TEST: Client connected, waiting for server");
         let mut server_conn = server_task.await.unwrap().unwrap();
+        info!("TEST: Server accepted connection");
 
+        info!("TEST: Client sending data");
         client.send_raw(b"hello quic").await.unwrap();
+        info!("TEST: Client sent, server receiving");
         let (data, _) = server_conn.recv_raw().await.unwrap();
+        info!("TEST: Server received {} bytes", data.len());
         assert_eq!(data, b"hello quic");
+        info!("TEST: test_quic_bind_and_accept PASSED");
     }
 
     #[cfg(feature = "quic")]
     #[tokio::test]
     async fn test_quic_multiple_messages() {
+        info!("TEST: test_quic_multiple_messages starting");
         let listener = VCLTransport::bind_quic("0.0.0.0:0").await.unwrap();
         let local_addr = listener.local_addr().unwrap();
         let addr_str = format!("127.0.0.1:{}", local_addr.port());
@@ -793,7 +847,7 @@ mod tests {
             listener.accept().await
         });
 
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         let mut client = VCLTransport::connect_quic(&addr_str).await.unwrap();
         let mut server_conn = server_task.await.unwrap().unwrap();
@@ -809,6 +863,7 @@ mod tests {
     #[cfg(feature = "quic")]
     #[tokio::test]
     async fn test_quic_large_payload() {
+        info!("TEST: test_quic_large_payload starting");
         let listener = VCLTransport::bind_quic("0.0.0.0:0").await.unwrap();
         let local_addr = listener.local_addr().unwrap();
         let addr_str = format!("127.0.0.1:{}", local_addr.port());
@@ -817,7 +872,7 @@ mod tests {
             listener.accept().await
         });
 
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         let mut client = VCLTransport::connect_quic(&addr_str).await.unwrap();
         let mut server_conn = server_task.await.unwrap().unwrap();
@@ -856,7 +911,7 @@ mod tests {
             listener.accept().await
         });
 
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         let client = VCLTransport::connect_quic(&addr_str).await.unwrap();
         let server_conn = server_task.await.unwrap().unwrap();
@@ -880,7 +935,7 @@ mod tests {
             listener.accept().await
         });
 
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         let _client = VCLTransport::connect_quic(&addr_str).await.unwrap();
         let server_conn = server_task.await.unwrap().unwrap();
