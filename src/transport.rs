@@ -640,12 +640,14 @@ mod tests {
     async fn test_tcp_send_recv() {
         let server_listener = VCLTransport::bind_tcp("127.0.0.1:0").await.unwrap();
         let server_addr = server_listener.local_addr().unwrap().to_string();
-        let (server_result, client_result) = tokio::join!(
-            server_listener.accept(),
-            VCLTransport::connect_tcp(&server_addr),
-        );
-        let mut server_conn = server_result.unwrap();
-        let mut client_conn = client_result.unwrap();
+        
+        let server_task = tokio::spawn(async move {
+            server_listener.accept().await
+        });
+        
+        let mut client_conn = VCLTransport::connect_tcp(&server_addr).await.unwrap();
+        let mut server_conn = server_task.await.unwrap().unwrap();
+        
         client_conn.send_raw(b"hello tcp vcl").await.unwrap();
         let (data, _) = server_conn.recv_raw().await.unwrap();
         assert_eq!(data, b"hello tcp vcl");
@@ -655,12 +657,14 @@ mod tests {
     async fn test_tcp_multiple_messages() {
         let server_listener = VCLTransport::bind_tcp("127.0.0.1:0").await.unwrap();
         let server_addr = server_listener.local_addr().unwrap().to_string();
-        let (server_result, client_result) = tokio::join!(
-            server_listener.accept(),
-            VCLTransport::connect_tcp(&server_addr),
-        );
-        let mut server_conn = server_result.unwrap();
-        let mut client_conn = client_result.unwrap();
+        
+        let server_task = tokio::spawn(async move {
+            server_listener.accept().await
+        });
+        
+        let mut client_conn = VCLTransport::connect_tcp(&server_addr).await.unwrap();
+        let mut server_conn = server_task.await.unwrap().unwrap();
+        
         for i in 0..5u8 {
             let msg = vec![i; 100];
             client_conn.send_raw(&msg).await.unwrap();
@@ -673,12 +677,17 @@ mod tests {
     async fn test_ws_send_recv() {
         let server_listener = VCLTransport::bind_ws("127.0.0.1:0").await.unwrap();
         let server_addr = format!("ws://{}", server_listener.local_addr().unwrap());
-        let (server_result, client_result) = tokio::join!(
-            server_listener.accept(),
-            VCLTransport::connect_ws(&server_addr),
-        );
-        let mut server_conn = server_result.unwrap();
-        let mut client_conn = client_result.unwrap();
+        
+        let server_task = tokio::spawn(async move {
+            server_listener.accept().await
+        });
+        
+        // Small sleep to ensure server is ready for handshake
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        
+        let mut client_conn = VCLTransport::connect_ws(&server_addr).await.unwrap();
+        let mut server_conn = server_task.await.unwrap().unwrap();
+        
         client_conn.send_raw(b"hello websocket vcl").await.unwrap();
         let (data, _) = server_conn.recv_raw().await.unwrap();
         assert_eq!(data, b"hello websocket vcl");
@@ -688,12 +697,16 @@ mod tests {
     async fn test_ws_multiple_messages() {
         let server_listener = VCLTransport::bind_ws("127.0.0.1:0").await.unwrap();
         let server_addr = format!("ws://{}", server_listener.local_addr().unwrap());
-        let (server_result, client_result) = tokio::join!(
-            server_listener.accept(),
-            VCLTransport::connect_ws(&server_addr),
-        );
-        let mut server_conn = server_result.unwrap();
-        let mut client_conn = client_result.unwrap();
+        
+        let server_task = tokio::spawn(async move {
+            server_listener.accept().await
+        });
+        
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        
+        let mut client_conn = VCLTransport::connect_ws(&server_addr).await.unwrap();
+        let mut server_conn = server_task.await.unwrap().unwrap();
+        
         for i in 0..5u8 {
             let msg = vec![i; 200];
             client_conn.send_raw(&msg).await.unwrap();
