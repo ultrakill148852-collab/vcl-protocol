@@ -39,6 +39,7 @@ use tokio_tungstenite::{
 use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::{debug, info, warn};
 
 // QUIC Dependencies
@@ -343,7 +344,7 @@ impl VCLTransport {
     // ─── Send / Recv ─────────────────────────────────────────────────────────
 
     /// Send raw bytes to the peer.
-    pub async fn send_raw(&mut self, data: &[u8]) -> Result<(), VCLError> {
+    pub async fn send_raw(&mut self,  &[u8]) -> Result<(), VCLError> {
         match self {
             VCLTransport::Udp { socket, peer_addr } => {
                 let addr = peer_addr.ok_or(VCLError::NoPeerAddress)?;
@@ -489,9 +490,14 @@ impl VCLTransport {
             #[cfg(feature = "quic")]
             VCLTransport::Quic { recv, .. } => {
                 debug!("QUIC recv waiting");
-                // FIX: Quinn's read_to_end takes size_limit and returns Vec<u8>
-                let buf = recv.read_to_end(UDP_MAX_SIZE).await
-                    .map_err(|e| VCLError::IoError(format!("QUIC recv failed: {}", e)))?;
+                // FIX: Add timeout to prevent hanging
+                let buf = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    recv.read_to_end(UDP_MAX_SIZE)
+                )
+                .await
+                .map_err(|_| VCLError::IoError("QUIC recv timeout".into()))?
+                .map_err(|e| VCLError::IoError(format!("QUIC recv failed: {}", e)))?;
                 
                 if buf.is_empty() {
                     warn!("QUIC stream closed with no data");
@@ -646,6 +652,14 @@ impl ServerCertVerifier for SkipServerVerification {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Initialize tracing subscriber for tests
+    #[ctor::ctor]
+    fn init_tracing() {
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .try_init();
+    }
 
     #[tokio::test]
     async fn test_udp_bind() {
@@ -814,7 +828,7 @@ mod tests {
         });
 
         info!("TEST: Sleeping 100ms to let server start");
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         info!("TEST: Connecting QUIC client to {}", addr_str);
         let mut client = VCLTransport::connect_quic(&addr_str).await.unwrap();
@@ -843,7 +857,7 @@ mod tests {
             listener.accept().await
         });
 
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         let mut client = VCLTransport::connect_quic(&addr_str).await.unwrap();
         let mut server_conn = server_task.await.unwrap().unwrap();
@@ -868,7 +882,7 @@ mod tests {
             listener.accept().await
         });
 
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         let mut client = VCLTransport::connect_quic(&addr_str).await.unwrap();
         let mut server_conn = server_task.await.unwrap().unwrap();
@@ -907,7 +921,7 @@ mod tests {
             listener.accept().await
         });
 
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         let client = VCLTransport::connect_quic(&addr_str).await.unwrap();
         let server_conn = server_task.await.unwrap().unwrap();
@@ -931,7 +945,7 @@ mod tests {
             listener.accept().await
         });
 
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         let _client = VCLTransport::connect_quic(&addr_str).await.unwrap();
         let server_conn = server_task.await.unwrap().unwrap();
